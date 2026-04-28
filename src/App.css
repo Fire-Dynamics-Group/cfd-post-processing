@@ -1,0 +1,117 @@
+:root {
+  font-family: "Segoe UI", system-ui, sans-serif;
+  color-scheme: light dark;
+  background: #f6f7f9;
+  color: #1f2328;
+}
+
+body {
+  margin: 0;
+}
+
+.app-shell {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 32px 48px;
+}
+
+h1 {
+  font-size: 22px;
+  margin: 0 0 16px;
+}
+
+form.report-form {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 10px 12px;
+  align-items: center;
+}
+
+form.report-form label {
+  font-size: 13px;
+  text-align: right;
+}
+
+form.report-form input[type="text"],
+form.report-form input[type="number"] {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid #c5c9d0;
+  border-radius: 4px;
+  background: white;
+  box-sizing: border-box;
+}
+
+form.report-form .path-row {
+  display: flex;
+  gap: 6px;
+}
+
+form.report-form .path-row input {
+  flex: 1;
+}
+
+form.report-form .radio-row {
+  display: flex;
+  gap: 16px;
+}
+
+form.report-form .max-td-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+form.report-form .max-td-row input {
+  flex: 1;
+}
+
+button {
+  padding: 6px 12px;
+  font-size: 13px;
+  border: 1px solid #4a90e2;
+  background: #4a90e2;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #3a7bc8;
+}
+
+button.secondary {
+  background: white;
+  color: #1f2328;
+  border-color: #c5c9d0;
+}
+
+button.secondary:hover {
+  background: #eef0f3;
+}
+
+.actions {
+  grid-column: 2;
+  margin-top: 8px;
+}
+
+.status-area {
+  grid-column: 1 / -1;
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.status-area.ok {
+  background: #e8f6ec;
+  border: 1px solid #87c697;
+}
+
+.status-area.error {
+  background: #fdeaea;
+  border: 1px solid #e29494;
+}

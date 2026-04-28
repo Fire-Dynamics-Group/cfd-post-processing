@@ -1,0 +1,43 @@
+# --- Node / Vite ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+*.tsbuildinfo
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Virtualenv
+venv/
+env/
+.venv/
+
+# PyInstaller build artefacts
+build/
+dist/
+*.spec.bak
+
+# --- Tauri / Rust ---
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Logs / scratch ---
+*.log
+tmp/
