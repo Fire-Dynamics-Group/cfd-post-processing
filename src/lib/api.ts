@@ -88,10 +88,13 @@ export function parseFieldErrors(payload: unknown): Record<string, string> {
 }
 
 async function parseBody(response: Response): Promise<unknown> {
+  // Reading .json() first would consume the stream and leave .text() with
+  // "Body is unusable". Read text once, then try to parse.
+  const text = await response.text();
   try {
-    return await response.json();
+    return JSON.parse(text);
   } catch {
-    return await response.text();
+    return text;
   }
 }
 
