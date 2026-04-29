@@ -57,6 +57,7 @@ describe("ChartsForm progressive UI", () => {
           ],
           scenarios_total: 2,
           errors: [],
+          skipped: [],
           error: null,
         }),
       )
@@ -82,6 +83,7 @@ describe("ChartsForm progressive UI", () => {
           ],
           scenarios_total: 2,
           errors: [],
+          skipped: [],
           error: null,
         }),
       );
@@ -116,6 +118,56 @@ describe("ChartsForm progressive UI", () => {
     expect(screen.queryByText(/scenarios complete/i)).not.toBeInTheDocument();
   });
 
+  it("renders a tidy 'Skipped folders' block when the response includes skipped names", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(postResponse("JOB"))
+      .mockResolvedValueOnce(
+        pollResponse({
+          job_id: "JOB",
+          status: "completed",
+          project_name: "Test",
+          scenarios: [
+            {
+              name: "FS1_FSA",
+              charts: [
+                { filename: "hrr.png", url: "/charts/JOB/FS1_FSA/hrr.png" },
+              ],
+            },
+          ],
+          scenarios_total: 2,
+          errors: [
+            "No fds file found in C:/.../FS2_Rerun for scenario:FS2_Rerun. Please add fds file.",
+          ],
+          skipped: ["FS2_Rerun"],
+          error: null,
+        }),
+      );
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<ChartsForm />);
+
+    await user.type(screen.getByLabelText(/path to runs/i), "C:/runs");
+    await user.type(screen.getByLabelText(/project name/i), "Test");
+    await user.click(screen.getByRole("button", { name: /create charts/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /new run/i }),
+      ).toBeInTheDocument();
+    });
+
+    // The clean per-folder summary is shown…
+    expect(screen.getByText(/Skipped folders:/i)).toBeInTheDocument();
+    expect(screen.getByText("FS2_Rerun", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText(/no FDS data — skipped/i)).toBeInTheDocument();
+
+    // …and the verbose legacy "Please add X file" wording does NOT leak
+    // into the UI.
+    expect(screen.queryByText(/Please add/i)).not.toBeInTheDocument();
+  });
+
   it("surfaces a failed status as an error banner", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
@@ -129,6 +181,7 @@ describe("ChartsForm progressive UI", () => {
           scenarios: [],
           scenarios_total: 0,
           errors: [],
+          skipped: [],
           error: "RuntimeError: kaboom",
         }),
       );

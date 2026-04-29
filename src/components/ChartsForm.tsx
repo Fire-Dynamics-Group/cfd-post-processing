@@ -22,7 +22,13 @@ const POLL_INTERVAL_MS = 500;
 
 
 function emptyManifest(jobId: string, projectName: string): ChartManifest {
-  return { job_id: jobId, project_name: projectName, scenarios: [], errors: [] };
+  return {
+    job_id: jobId,
+    project_name: projectName,
+    scenarios: [],
+    errors: [],
+    skipped: [],
+  };
 }
 
 
@@ -74,6 +80,7 @@ export default function ChartsForm() {
               project_name: state.project_name,
               scenarios: state.scenarios,
               errors: state.errors,
+              skipped: state.skipped,
             },
           });
           return;
@@ -95,6 +102,7 @@ export default function ChartsForm() {
             project_name: state.project_name,
             scenarios: state.scenarios,
             errors: state.errors,
+            skipped: state.skipped,
           },
           total: state.scenarios_total,
         });
@@ -137,12 +145,17 @@ export default function ChartsForm() {
             </button>
           )}
         </div>
-        {manifest.errors.length > 0 && (
-          <ul className="warnings">
-            {manifest.errors.map((err, i) => (
-              <li key={i}>{err}</li>
-            ))}
-          </ul>
+        {manifest.skipped.length > 0 && (
+          <div className="skipped-folders">
+            <strong>Skipped folders:</strong>
+            <ul>
+              {manifest.skipped.map((name) => (
+                <li key={name}>
+                  {name} <span className="muted">(no FDS data — skipped)</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
         {manifest.scenarios.length > 0 ? (
           <ChartViewer manifest={manifest} />

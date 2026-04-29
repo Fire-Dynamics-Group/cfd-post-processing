@@ -327,6 +327,7 @@ describe("pollChartsJob", () => {
       ],
       scenarios_total: 2,
       errors: [],
+      skipped: [],
       error: null,
     };
     vi.mocked(fetch).mockResolvedValue(
@@ -381,6 +382,7 @@ describe("generateCharts (start + poll wrapper)", () => {
       ],
       scenarios_total: 1,
       errors: [],
+      skipped: [],
       error: null,
     };
     vi.mocked(fetch)
@@ -404,6 +406,7 @@ describe("generateCharts (start + poll wrapper)", () => {
       scenarios: [],
       scenarios_total: 0,
       errors: [],
+      skipped: [],
       error: "RuntimeError: kaboom",
     };
     vi.mocked(fetch)

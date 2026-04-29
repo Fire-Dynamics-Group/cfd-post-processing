@@ -135,7 +135,12 @@ export interface ChartManifest {
   job_id: string;
   project_name: string;
   scenarios: ChartScenario[];
+  /** Verbose per-file messages from the legacy chart helpers. Kept
+   * around for diagnostics; the UI renders ``skipped`` instead. */
   errors: string[];
+  /** Names of subdirectories that looked like scenarios but lacked the
+   * required FDS files and were skipped. */
+  skipped: string[];
 }
 
 export type ChartsJobStatus = "running" | "completed" | "failed";
@@ -150,6 +155,7 @@ export interface ChartsJobState {
   scenarios: ChartScenario[];
   scenarios_total: number;
   errors: string[];
+  skipped: string[];
   error: string | null;
 }
 
@@ -210,6 +216,7 @@ export async function generateCharts(payload: ChartsPayload): Promise<ChartManif
         project_name: state.project_name,
         scenarios: state.scenarios,
         errors: state.errors,
+        skipped: state.skipped,
       };
     }
     if (state.status === "failed") {

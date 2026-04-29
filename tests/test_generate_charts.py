@@ -95,6 +95,7 @@ def test_generate_charts_returns_jobid_and_then_completes(tmp_path, monkeypatch)
     assert body["status"] == "completed"
     assert body["project_name"] == "Test"
     assert body["scenarios_total"] == 2
+    assert body["skipped"] == []
 
     scenarios_by_name = {s["name"]: s for s in body["scenarios"]}
     assert sorted(scenarios_by_name) == ["FS1_FSA", "FS2_MOE"]
@@ -226,6 +227,10 @@ def test_generate_charts_skips_subdirs_with_missing_files(tmp_path, monkeypatch)
     assert list(scenarios_by_name) == ["FS1_FSA"], (
         "FS2_Rerun should be skipped: it has no .fds/hrr/devc files"
     )
+    # The verbose `errors` list keeps the legacy per-file messages for
+    # diagnostics, but the UI consumes `skipped` (one entry per folder)
+    # so it can render a tidy "Skipped folders" section.
+    assert body["skipped"] == ["FS2_Rerun"]
     assert any("FS2_Rerun" in e for e in body["errors"])
     captured_dirs = {entry[1] for entry in captured}
     assert all("FS2_Rerun" not in d for d in captured_dirs)

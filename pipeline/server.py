@@ -128,6 +128,7 @@ def _snapshot_charts_job(state: dict[str, Any]) -> dict[str, Any]:
             for s in state["scenarios"]
         ],
         "errors": list(state["errors"]),
+        "skipped": list(state["skipped"]),
     }
 
 
@@ -278,7 +279,11 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
                 "project_name": req.PROJECT_NAME,
                 "scenarios": [],
                 "scenarios_total": 0,
+                # `errors` keeps the legacy verbose per-file messages from
+                # ``return_paths_to_files`` for diagnostics; `skipped` is
+                # the tidy folder-level list the UI renders.
                 "errors": [],
+                "skipped": [],
                 "error": None,
             }
 
@@ -346,6 +351,7 @@ def _run_charts_job(job_id: str, req: ChartsRequest) -> None:
                 # See the charts-mode skip note in the previous commit.
                 with _charts_jobs_lock:
                     _charts_jobs[job_id]["errors"].extend(error_list)
+                    _charts_jobs[job_id]["skipped"].append(name)
                 try:
                     os.rmdir(scenario_dir)
                 except OSError:

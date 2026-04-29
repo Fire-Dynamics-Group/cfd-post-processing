@@ -11,6 +11,7 @@ function manifest(): ChartManifest {
     job_id: "JOB",
     project_name: "Test",
     errors: [],
+    skipped: [],
     scenarios: [
       {
         name: "FS1_FSA",
@@ -110,6 +111,7 @@ describe("ChartViewer", () => {
           job_id: "JOB",
           project_name: "Test",
           errors: [],
+          skipped: [],
           scenarios: [],
         }}
       />,
