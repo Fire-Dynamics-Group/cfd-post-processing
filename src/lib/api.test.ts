@@ -6,7 +6,10 @@ import {
   createJob,
   generateCharts,
   parseFieldErrors,
+  pollChartsJob,
   pollJob,
+  startChartsJob,
+  type ChartsJobState,
   type JobState,
   type ReportPayload,
 } from "./api";
@@ -261,7 +264,7 @@ describe("copyDiagnostic", () => {
 });
 
 
-describe("generateCharts", () => {
+describe("startChartsJob", () => {
   const payload = { PATH: "C:/runs", PROJECT_NAME: "Test" };
 
   beforeEach(() => {
@@ -272,9 +275,100 @@ describe("generateCharts", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts to /generate-charts and rewrites chart URLs to absolute", async () => {
-    const serverBody = {
+  it("posts to /generate-charts and returns the job_id", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ job_id: "JOB" }), { status: 202 }),
+    );
+
+    await expect(startChartsJob(payload)).resolves.toEqual({ job_id: "JOB" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/generate-charts",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  });
+
+  it("throws JobRequestError on non-2xx (e.g. 400 PATH not found)", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ detail: "PATH not found: nope" }), { status: 400 }),
+    );
+    await expect(startChartsJob(payload)).rejects.toMatchObject({
+      status: 400,
+      payload: { detail: "PATH not found: nope" },
+    });
+  });
+});
+
+
+describe("pollChartsJob", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("rewrites chart URLs to absolute and returns the snapshot shape", async () => {
+    const serverBody: ChartsJobState = {
       job_id: "JOB",
+      status: "running",
+      project_name: "Test",
+      scenarios: [
+        {
+          name: "FS1_FSA",
+          charts: [
+            { filename: "hrr.png", url: "/charts/JOB/FS1_FSA/hrr.png" },
+          ],
+        },
+      ],
+      scenarios_total: 2,
+      errors: [],
+      error: null,
+    };
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify(serverBody), { status: 200 }),
+    );
+
+    const state = await pollChartsJob("JOB");
+
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/generate-charts/JOB",
+    );
+    expect(state.status).toBe("running");
+    expect(state.scenarios_total).toBe(2);
+    expect(state.scenarios[0].charts[0].url).toBe(
+      "http://127.0.0.1:8765/charts/JOB/FS1_FSA/hrr.png",
+    );
+  });
+
+  it("throws JobRequestError on 404 (unknown charts job)", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ detail: "Unknown charts job" }), { status: 404 }),
+    );
+    await expect(pollChartsJob("missing")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+
+describe("generateCharts (start + poll wrapper)", () => {
+  const payload = { PATH: "C:/runs", PROJECT_NAME: "Test" };
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("starts a job, polls until completed, and returns the manifest with absolute URLs", async () => {
+    const completed: ChartsJobState = {
+      job_id: "JOB",
+      status: "completed",
       project_name: "Test",
       scenarios: [
         {
@@ -285,20 +379,16 @@ describe("generateCharts", () => {
           ],
         },
       ],
+      scenarios_total: 1,
       errors: [],
+      error: null,
     };
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response(JSON.stringify(serverBody), { status: 200 }));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ job_id: "JOB" }), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(completed), { status: 200 }));
 
     const result = await generateCharts(payload);
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8765/generate-charts",
-      expect.objectContaining({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
     expect(result.job_id).toBe("JOB");
     expect(result.scenarios[0].charts.map((c) => c.url)).toEqual([
       "http://127.0.0.1:8765/charts/JOB/FS1_FSA/hrr_chart.png",
@@ -306,13 +396,23 @@ describe("generateCharts", () => {
     ]);
   });
 
-  it("throws JobRequestError on non-2xx", async () => {
-    vi.mocked(fetch).mockResolvedValue(
-      new Response(JSON.stringify({ detail: "PATH not found: nope" }), { status: 400 }),
-    );
+  it("throws JobRequestError when the job ends in failed status", async () => {
+    const failed: ChartsJobState = {
+      job_id: "JOB",
+      status: "failed",
+      project_name: "Test",
+      scenarios: [],
+      scenarios_total: 0,
+      errors: [],
+      error: "RuntimeError: kaboom",
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ job_id: "JOB" }), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(failed), { status: 200 }));
+
     await expect(generateCharts(payload)).rejects.toMatchObject({
-      status: 400,
-      payload: { detail: "PATH not found: nope" },
+      status: 500,
+      message: "RuntimeError: kaboom",
     });
   });
 });

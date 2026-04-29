@@ -108,6 +108,29 @@ def _ensure_chart_imports() -> None:
         run_devc_charts = _rdc
 
 
+# Charts-job registry. Separate from the report-flow JobRegistry because
+# its state shape (Step enum, output_path) doesn't fit charts-mode's
+# progressive-scenarios contract. Ring buffer of CHARTS_JOBS_CAPACITY most
+# recent jobs to bound memory; old entries are evicted in insertion order.
+_charts_jobs: dict[str, dict[str, Any]] = {}
+_charts_jobs_lock = threading.Lock()
+CHARTS_JOBS_CAPACITY = 10
+
+
+def _snapshot_charts_job(state: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep-enough copy of a charts-job state for safe handoff
+    to a JSON response. Callers see a frozen view; mutations by the
+    worker thread between snapshot and serialisation are invisible."""
+    return {
+        **state,
+        "scenarios": [
+            {**s, "charts": [dict(c) for c in s["charts"]]}
+            for s in state["scenarios"]
+        ],
+        "errors": list(state["errors"]),
+    }
+
+
 # Type alias: the orchestrator contract the server depends on.
 # Decoupling lets tests inject a fast fake instead of running the real pipeline.
 from typing import Callable
@@ -239,27 +262,72 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Unknown job id")
         return state.to_dict()
 
-    @app.post("/generate-charts")
-    def generate_charts(req: ChartsRequest) -> dict[str, Any]:
+    @app.post("/generate-charts", status_code=202)
+    def start_charts_job(req: ChartsRequest) -> dict[str, str]:
         if not os.path.isdir(req.PATH):
             raise HTTPException(status_code=400, detail=f"PATH not found: {req.PATH}")
 
+        job_id = uuid.uuid4().hex
+        with _charts_jobs_lock:
+            while len(_charts_jobs) >= CHARTS_JOBS_CAPACITY:
+                oldest = next(iter(_charts_jobs))
+                del _charts_jobs[oldest]
+            _charts_jobs[job_id] = {
+                "job_id": job_id,
+                "status": "running",
+                "project_name": req.PROJECT_NAME,
+                "scenarios": [],
+                "scenarios_total": 0,
+                "errors": [],
+                "error": None,
+            }
+
+        threading.Thread(
+            target=_run_charts_job,
+            args=(job_id, req),
+            daemon=True,
+            name=f"charts-{job_id[:8]}",
+        ).start()
+        return {"job_id": job_id}
+
+    @app.get("/generate-charts/{job_id}")
+    def get_charts_job(job_id: str) -> dict[str, Any]:
+        with _charts_jobs_lock:
+            state = _charts_jobs.get(job_id)
+            if state is None:
+                raise HTTPException(status_code=404, detail="Unknown charts job")
+            return _snapshot_charts_job(state)
+
+    return app
+
+
+def _run_charts_job(job_id: str, req: ChartsRequest) -> None:
+    """Worker thread for /generate-charts.
+
+    Iterates over scenario subdirs in deterministic (sorted) order. For
+    each one: lazy-imports the chart helpers, runs ``run_hrr_charts`` +
+    ``run_devc_charts``, then atomically appends the new scenario's
+    manifest entry to the registry so polling clients see it immediately.
+    Subdirs whose ``return_paths_to_files`` reports errors are skipped
+    and their errors surfaced into the registry.
+    """
+    try:
         _ensure_chart_imports()
 
         root = req.PATH
-        sub_folders = [
+        sub_folders = sorted(
             f for f in os.listdir(root) if os.path.isdir(os.path.join(root, f))
-        ]
+        )
         if not sub_folders:
             sub_folders = [os.path.basename(os.path.dirname(root))]
             root = os.path.dirname(root)
 
-        job_id = uuid.uuid4().hex
+        with _charts_jobs_lock:
+            _charts_jobs[job_id]["scenarios_total"] = len(sub_folders)
+
         job_dir = os.path.join(CHARTS_BASE, job_id)
         os.makedirs(job_dir, exist_ok=True)
 
-        scenarios: list[dict[str, Any]] = []
-        errors: list[str] = []
         for name in sub_folders:
             scenario_dir = os.path.join(job_dir, name)
             os.makedirs(scenario_dir, exist_ok=True)
@@ -275,15 +343,9 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
                 scenario_name=name, dir_path=root, new_folder_structure=True
             )
             if error_list:
-                # ``return_paths_to_files`` reports missing .fds / hrr.csv /
-                # devc.csv as errors and substitutes ``'error'`` placeholders
-                # for the absent paths. Real-world Finchley-style runs sit
-                # next to legacy ``_Rerun`` folders that aren't real
-                # scenarios — handing the placeholders to pandas would
-                # crash the whole request. Skip the subdir, surface the
-                # errors so the UI can show them, and remove the empty
-                # scenario_dir we just created.
-                errors.extend(error_list)
+                # See the charts-mode skip note in the previous commit.
+                with _charts_jobs_lock:
+                    _charts_jobs[job_id]["errors"].extend(error_list)
                 try:
                     os.rmdir(scenario_dir)
                 except OSError:
@@ -306,27 +368,28 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
             chart_files = sorted(
                 f for f in os.listdir(scenario_dir) if f.lower().endswith(".png")
             )
-            scenarios.append(
-                {
-                    "name": name,
-                    "charts": [
-                        {
-                            "filename": fn,
-                            "url": f"/charts/{job_id}/{name}/{fn}",
-                        }
-                        for fn in chart_files
-                    ],
-                }
-            )
+            scenario_entry = {
+                "name": name,
+                "charts": [
+                    {
+                        "filename": fn,
+                        "url": f"/charts/{job_id}/{name}/{fn}",
+                    }
+                    for fn in chart_files
+                ],
+            }
+            with _charts_jobs_lock:
+                _charts_jobs[job_id]["scenarios"].append(scenario_entry)
 
-        return {
-            "job_id": job_id,
-            "project_name": req.PROJECT_NAME,
-            "scenarios": scenarios,
-            "errors": errors,
-        }
-
-    return app
+        with _charts_jobs_lock:
+            _charts_jobs[job_id]["status"] = "completed"
+    except Exception as exc:  # noqa: BLE001 - surface everything to the UI
+        with _charts_jobs_lock:
+            if job_id in _charts_jobs:
+                _charts_jobs[job_id]["status"] = "failed"
+                _charts_jobs[job_id]["error"] = f"{type(exc).__name__}: {exc}"
+                _charts_jobs[job_id]["traceback"] = traceback.format_exc()
+        logger.exception("Unhandled error in charts job %s", job_id)
 
 
 app = create_app()

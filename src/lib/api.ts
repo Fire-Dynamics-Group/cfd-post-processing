@@ -138,9 +138,25 @@ export interface ChartManifest {
   errors: string[];
 }
 
-export async function generateCharts(payload: ChartsPayload): Promise<ChartManifest> {
-  const base = await baseUrl();
-  const response = await fetch(`${base}/generate-charts`, {
+export type ChartsJobStatus = "running" | "completed" | "failed";
+
+/** Snapshot of a charts-mode job. ``scenarios`` grows progressively as the
+ * worker thread renders each subdirectory. ``scenarios_total`` is set
+ * once discovery completes (which happens early in the worker). */
+export interface ChartsJobState {
+  job_id: string;
+  status: ChartsJobStatus;
+  project_name: string;
+  scenarios: ChartScenario[];
+  scenarios_total: number;
+  errors: string[];
+  error: string | null;
+}
+
+/** Kick off a charts job. Returns the ``job_id`` straight away — the
+ * caller must poll ``pollChartsJob`` to see scenarios as they land. */
+export async function startChartsJob(payload: ChartsPayload): Promise<{ job_id: string }> {
+  const response = await fetch(`${await baseUrl()}/generate-charts`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -152,16 +168,59 @@ export async function generateCharts(payload: ChartsPayload): Promise<ChartManif
       await parseBody(response),
     );
   }
-  const body = (await response.json()) as ChartManifest;
-  // Server returns relative chart URLs (mounted at /charts); rewrite to
-  // absolute so consumers can drop the URL straight into <img src=...>.
+  return response.json();
+}
+
+/** Fetch the current snapshot of a charts job. Server-relative chart URLs
+ * are rewritten to absolute so callers can drop them straight into
+ * ``<img src=...>``. */
+export async function pollChartsJob(jobId: string): Promise<ChartsJobState> {
+  const base = await baseUrl();
+  const response = await fetch(`${base}/generate-charts/${jobId}`);
+  if (!response.ok) {
+    throw new JobRequestError(
+      `HTTP ${response.status}`,
+      response.status,
+      await parseBody(response),
+    );
+  }
+  const state = (await response.json()) as ChartsJobState;
   return {
-    ...body,
-    scenarios: body.scenarios.map((s) => ({
+    ...state,
+    scenarios: state.scenarios.map((s) => ({
       ...s,
       charts: s.charts.map((c) => ({ ...c, url: `${base}${c.url}` })),
     })),
   };
+}
+
+/** Convenience: start a job and poll until it reaches a terminal status,
+ * returning the final manifest. Used by tests / non-progressive callers;
+ * UI flows that want progressive updates should use ``startChartsJob`` +
+ * ``pollChartsJob`` directly. */
+export async function generateCharts(payload: ChartsPayload): Promise<ChartManifest> {
+  const { job_id } = await startChartsJob(payload);
+  // Tight-but-bounded polling. Tests run with a fake fetch so the loop
+  // resolves on the first poll; live use sees ~500ms cadence.
+  for (;;) {
+    const state = await pollChartsJob(job_id);
+    if (state.status === "completed") {
+      return {
+        job_id: state.job_id,
+        project_name: state.project_name,
+        scenarios: state.scenarios,
+        errors: state.errors,
+      };
+    }
+    if (state.status === "failed") {
+      throw new JobRequestError(
+        state.error ?? "charts job failed",
+        500,
+        state,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
 }
 
 export async function pollJob(jobId: string): Promise<JobState> {

@@ -1,8 +1,9 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  generateCharts,
   JobRequestError,
+  pollChartsJob,
+  startChartsJob,
   type ChartManifest,
   type ChartsPayload,
 } from "../lib/api";
@@ -12,13 +13,26 @@ import ChartViewer from "./ChartViewer";
 type Status =
   | { kind: "idle" }
   | { kind: "submitting" }
+  | { kind: "running"; jobId: string; manifest: ChartManifest; total: number }
   | { kind: "ok"; manifest: ChartManifest }
   | { kind: "error"; message: string; payload: unknown };
+
+
+const POLL_INTERVAL_MS = 500;
+
+
+function emptyManifest(jobId: string, projectName: string): ChartManifest {
+  return { job_id: jobId, project_name: projectName, scenarios: [], errors: [] };
+}
 
 
 export default function ChartsForm() {
   const [values, setValues] = useState<ChartsPayload>({ PATH: "", PROJECT_NAME: "" });
   const [status, setStatus] = useState<Status>({ kind: "idle" });
+  // Sentinel for aborting the polling loop when the user clicks "New
+  // run" mid-flight. Polling stops the moment the ref no longer matches
+  // the loop's local job_id.
+  const pollingJobIdRef = useRef<string | null>(null);
 
   function update<K extends keyof ChartsPayload>(key: K, value: ChartsPayload[K]) {
     setValues((v) => ({ ...v, [key]: value }));
@@ -35,18 +49,60 @@ export default function ChartsForm() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (status.kind === "submitting") return;
+    if (status.kind === "submitting" || status.kind === "running") return;
     setStatus({ kind: "submitting" });
+
     try {
-      const manifest = await generateCharts(values);
-      setStatus({ kind: "ok", manifest });
+      const { job_id } = await startChartsJob(values);
+      pollingJobIdRef.current = job_id;
+      setStatus({
+        kind: "running",
+        jobId: job_id,
+        manifest: emptyManifest(job_id, values.PROJECT_NAME),
+        total: 0,
+      });
+
+      while (pollingJobIdRef.current === job_id) {
+        const state = await pollChartsJob(job_id);
+        if (pollingJobIdRef.current !== job_id) return;
+
+        if (state.status === "completed") {
+          setStatus({
+            kind: "ok",
+            manifest: {
+              job_id: state.job_id,
+              project_name: state.project_name,
+              scenarios: state.scenarios,
+              errors: state.errors,
+            },
+          });
+          return;
+        }
+
+        if (state.status === "failed") {
+          throw new JobRequestError(
+            state.error ?? "Charts job failed",
+            500,
+            state,
+          );
+        }
+
+        setStatus({
+          kind: "running",
+          jobId: job_id,
+          manifest: {
+            job_id: state.job_id,
+            project_name: state.project_name,
+            scenarios: state.scenarios,
+            errors: state.errors,
+          },
+          total: state.scenarios_total,
+        });
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      }
     } catch (err) {
       if (err instanceof JobRequestError) {
-        setStatus({
-          kind: "error",
-          message: `HTTP ${err.status}`,
-          payload: err.payload,
-        });
+        setStatus({ kind: "error", message: err.message, payload: err.payload });
       } else {
         setStatus({
           kind: "error",
@@ -58,26 +114,43 @@ export default function ChartsForm() {
   }
 
   function reset() {
+    // Tells the polling loop to stop on its next iteration.
+    pollingJobIdRef.current = null;
     setStatus({ kind: "idle" });
   }
 
-  if (status.kind === "ok") {
+  if (status.kind === "ok" || status.kind === "running") {
+    const manifest = status.manifest;
+    const isRunning = status.kind === "running";
     return (
       <div className="charts-result">
         <div className="charts-result-header">
-          <h2>{status.manifest.project_name} — Charts</h2>
-          <button type="button" className="secondary" onClick={reset}>
-            New run
-          </button>
+          <h2>{manifest.project_name} — Charts</h2>
+          {isRunning ? (
+            <span className="charts-progress">
+              {manifest.scenarios.length}
+              {status.total > 0 ? ` of ${status.total}` : ""} scenarios complete…
+            </span>
+          ) : (
+            <button type="button" className="secondary" onClick={reset}>
+              New run
+            </button>
+          )}
         </div>
-        {status.manifest.errors.length > 0 && (
+        {manifest.errors.length > 0 && (
           <ul className="warnings">
-            {status.manifest.errors.map((err, i) => (
+            {manifest.errors.map((err, i) => (
               <li key={i}>{err}</li>
             ))}
           </ul>
         )}
-        <ChartViewer manifest={status.manifest} />
+        {manifest.scenarios.length > 0 ? (
+          <ChartViewer manifest={manifest} />
+        ) : (
+          <div className="chart-viewer empty">
+            Waiting for the first scenario to render…
+          </div>
+        )}
       </div>
     );
   }
@@ -107,7 +180,7 @@ export default function ChartsForm() {
 
       <div className="actions">
         <button type="submit" disabled={status.kind === "submitting"}>
-          {status.kind === "submitting" ? "Generating..." : "Create Charts"}
+          {status.kind === "submitting" ? "Starting…" : "Create Charts"}
         </button>
       </div>
 
