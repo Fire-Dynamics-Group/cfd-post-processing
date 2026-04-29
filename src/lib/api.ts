@@ -115,6 +115,55 @@ export async function createJob(payload: ReportPayload): Promise<{ job_id: strin
   return response.json();
 }
 
+export interface ChartsPayload {
+  PATH: string;
+  PROJECT_NAME: string;
+}
+
+export interface ChartManifestEntry {
+  filename: string;
+  /** Absolute URL — already prefixed with the sidecar base URL. */
+  url: string;
+}
+
+export interface ChartScenario {
+  name: string;
+  charts: ChartManifestEntry[];
+}
+
+export interface ChartManifest {
+  job_id: string;
+  project_name: string;
+  scenarios: ChartScenario[];
+  errors: string[];
+}
+
+export async function generateCharts(payload: ChartsPayload): Promise<ChartManifest> {
+  const base = await baseUrl();
+  const response = await fetch(`${base}/generate-charts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new JobRequestError(
+      `HTTP ${response.status}`,
+      response.status,
+      await parseBody(response),
+    );
+  }
+  const body = (await response.json()) as ChartManifest;
+  // Server returns relative chart URLs (mounted at /charts); rewrite to
+  // absolute so consumers can drop the URL straight into <img src=...>.
+  return {
+    ...body,
+    scenarios: body.scenarios.map((s) => ({
+      ...s,
+      charts: s.charts.map((c) => ({ ...c, url: `${base}${c.url}` })),
+    })),
+  };
+}
+
 export async function pollJob(jobId: string): Promise<JobState> {
   const url = `${await baseUrl()}/jobs/${jobId}`;
   const response = await fetch(url);

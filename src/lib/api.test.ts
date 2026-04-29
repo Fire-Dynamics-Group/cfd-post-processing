@@ -4,6 +4,7 @@ import {
   buildDiagnosticBlob,
   copyDiagnostic,
   createJob,
+  generateCharts,
   parseFieldErrors,
   pollJob,
   type JobState,
@@ -256,6 +257,63 @@ describe("copyDiagnostic", () => {
 
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(execCommand).toHaveBeenCalledWith("copy");
+  });
+});
+
+
+describe("generateCharts", () => {
+  const payload = { PATH: "C:/runs", PROJECT_NAME: "Test" };
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts to /generate-charts and rewrites chart URLs to absolute", async () => {
+    const serverBody = {
+      job_id: "JOB",
+      project_name: "Test",
+      scenarios: [
+        {
+          name: "FS1_FSA",
+          charts: [
+            { filename: "hrr_chart.png", url: "/charts/JOB/FS1_FSA/hrr_chart.png" },
+            { filename: "devc.png",      url: "/charts/JOB/FS1_FSA/devc.png" },
+          ],
+        },
+      ],
+      errors: [],
+    };
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(serverBody), { status: 200 }));
+
+    const result = await generateCharts(payload);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/generate-charts",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(result.job_id).toBe("JOB");
+    expect(result.scenarios[0].charts.map((c) => c.url)).toEqual([
+      "http://127.0.0.1:8765/charts/JOB/FS1_FSA/hrr_chart.png",
+      "http://127.0.0.1:8765/charts/JOB/FS1_FSA/devc.png",
+    ]);
+  });
+
+  it("throws JobRequestError on non-2xx", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ detail: "PATH not found: nope" }), { status: 400 }),
+    );
+    await expect(generateCharts(payload)).rejects.toMatchObject({
+      status: 400,
+      payload: { detail: "PATH not found: nope" },
+    });
   });
 });
 

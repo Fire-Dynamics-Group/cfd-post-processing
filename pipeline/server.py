@@ -1,13 +1,17 @@
 """FastAPI sidecar for the CFD Post-Processing desktop app.
 
 Endpoints:
-- ``GET  /health``         — liveness probe used by Tauri before the UI loads.
-- ``POST /jobs``           — kick off a report-generation job, returns ``{job_id}``.
-- ``GET  /jobs/{job_id}``  — poll job state (step / progress_pct / error / output_path).
+- ``GET  /health``           — liveness probe used by Tauri before the UI loads.
+- ``POST /jobs``             — kick off a report-generation job, returns ``{job_id}``.
+- ``GET  /jobs/{job_id}``    — poll job state (step / progress_pct / error / output_path).
+- ``POST /generate-charts``  — charts-only mode: render PNGs per scenario, return manifest.
+- ``GET  /charts/{job}/...`` — static mount serving the generated PNGs.
 
-The sidecar runs one job at a time. ``POST /jobs`` while a job is running
-returns ``409 Conflict``. Job state is in-memory only (ring buffer of 10);
-the frontend disables the Create Report button while a job is running.
+The sidecar runs one report job at a time. ``POST /jobs`` while a job is
+running returns ``409 Conflict``. Charts-only mode is synchronous and
+runs in the request handler — there is no background queue and no 409
+gate (the frontend disables the Create Charts button while a request is
+in flight).
 
 Usage:
     python -m pipeline.server --port 9999
@@ -18,8 +22,10 @@ import argparse
 import logging
 import os
 import sys
+import tempfile
 import threading
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +48,8 @@ if _meipass:
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from pipeline.services.job import (
     ErrorType,
@@ -57,6 +65,47 @@ from pipeline.services.report import (
     ReportResult,
     run_orchestrator as _default_orchestrator,
 )
+
+
+# Where /generate-charts writes its PNGs and what /charts serves. Per-job
+# subdirectories keep concurrent requests (or a "new run" after an
+# unfinished one) from clobbering each other. ``tempfile.gettempdir()``
+# resolves to ``%LOCALAPPDATA%\Temp`` on Windows — fine for ephemeral
+# render output, cleaned by the OS.
+CHARTS_BASE = os.path.join(tempfile.gettempdir(), "cfd_post_processing_charts")
+
+
+class ChartsRequest(BaseModel):
+    """Charts-only payload — mirrors legacy ``run_only_charts.py``."""
+
+    PATH: str = Field(..., description="Path to runs' root directory")
+    PROJECT_NAME: str
+
+
+# Lazy-loaded chart helpers. Kept as module-level attributes (rather than
+# function-scoped imports) so tests can pre-populate them via
+# ``monkeypatch.setattr(server, "run_hrr_charts", ...)``. The ``hrr_graph``
+# module pulls matplotlib at import time (~70 % of the bundled-exe
+# cold-start cost — see PR 3 decision #17), so we hold off until the first
+# /generate-charts call. The ``is None`` guards in
+# ``_ensure_chart_imports`` short-circuit when a test has already
+# overridden the slot, preserving the monkeypatch contract.
+return_paths_to_files = None
+run_hrr_charts = None
+run_devc_charts = None
+
+
+def _ensure_chart_imports() -> None:
+    global return_paths_to_files, run_hrr_charts, run_devc_charts
+    if return_paths_to_files is None:
+        from helper_functions import return_paths_to_files as _rptf
+        return_paths_to_files = _rptf
+    if run_hrr_charts is None:
+        from hrr_graph import run_hrr_charts as _rhc
+        run_hrr_charts = _rhc
+    if run_devc_charts is None:
+        from hrr_graph import run_devc_charts as _rdc
+        run_devc_charts = _rdc
 
 
 # Type alias: the orchestrator contract the server depends on.
@@ -144,10 +193,14 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
     if orchestrator is None:
         orchestrator = _default_orchestrator
 
+    os.makedirs(CHARTS_BASE, exist_ok=True)
+
     app = FastAPI(title="CFD Post-Processing Sidecar", version="0.2.0")
     registry = JobRegistry(capacity=10)
     app.state.registry = registry
     app.state.orchestrator = orchestrator
+
+    app.mount("/charts", StaticFiles(directory=CHARTS_BASE), name="charts")
 
     # Sidecar binds to 127.0.0.1 — only callers are the Tauri webview and the
     # Vite dev server. Allow any origin for the preflight; no credentials.
@@ -185,6 +238,79 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
         if state is None:
             raise HTTPException(status_code=404, detail="Unknown job id")
         return state.to_dict()
+
+    @app.post("/generate-charts")
+    def generate_charts(req: ChartsRequest) -> dict[str, Any]:
+        if not os.path.isdir(req.PATH):
+            raise HTTPException(status_code=400, detail=f"PATH not found: {req.PATH}")
+
+        _ensure_chart_imports()
+
+        root = req.PATH
+        sub_folders = [
+            f for f in os.listdir(root) if os.path.isdir(os.path.join(root, f))
+        ]
+        if not sub_folders:
+            sub_folders = [os.path.basename(os.path.dirname(root))]
+            root = os.path.dirname(root)
+
+        job_id = uuid.uuid4().hex
+        job_dir = os.path.join(CHARTS_BASE, job_id)
+        os.makedirs(job_dir, exist_ok=True)
+
+        scenarios: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for name in sub_folders:
+            scenario_dir = os.path.join(job_dir, name)
+            os.makedirs(scenario_dir, exist_ok=True)
+
+            firefighting = "FSA" in name
+            (
+                path_to_hrr_file,
+                _path_to_scen_directory,
+                path_to_fds_file,
+                path_to_devc_file,
+                error_list,
+            ) = return_paths_to_files(
+                scenario_name=name, dir_path=root, new_folder_structure=True
+            )
+            errors.extend(error_list)
+
+            run_hrr_charts(
+                path_to_fds_file,
+                path_to_hrr_file,
+                new_dir_path=scenario_dir,
+                firefighting=firefighting,
+            )
+            run_devc_charts(
+                path_to_devc_file,
+                path_to_fds_file,
+                scenario_dir,
+                firefighting=firefighting,
+            )
+
+            chart_files = sorted(
+                f for f in os.listdir(scenario_dir) if f.lower().endswith(".png")
+            )
+            scenarios.append(
+                {
+                    "name": name,
+                    "charts": [
+                        {
+                            "filename": fn,
+                            "url": f"/charts/{job_id}/{name}/{fn}",
+                        }
+                        for fn in chart_files
+                    ],
+                }
+            )
+
+        return {
+            "job_id": job_id,
+            "project_name": req.PROJECT_NAME,
+            "scenarios": scenarios,
+            "errors": errors,
+        }
 
     return app
 
