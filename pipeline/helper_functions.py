@@ -17,6 +17,37 @@ def get_column_prefix(column_name):
     return re.sub(r'_\d+m?$', '_', column_name)
 
 
+def fds_stem_from_scenario_folder(scenario_name):
+    """Extract the FDS file stem from a scenario folder name.
+
+    Folder convention seen in real jobs (e.g. cloud HPC output):
+      '0406_Finchley_FS1_Plot80_FSA.fds_1776875134353_FDS'  ->  '0406_Finchley_FS1_Plot80_FSA'
+    Legacy / simple convention:
+      'FS1'      ->  'FS1'
+      'FS1.fds'  ->  'FS1'
+    """
+    if '.fds' in scenario_name:
+        return scenario_name.split('.fds')[0]
+    return scenario_name
+
+
+def group_charts_by_scenario(chart_names, scenario_names):
+    """Group chart filenames by their source scenario.
+
+    Charts are saved with the FDS basename as a prefix (e.g.
+    `0406_Finchley_FS1_Plot80_FSA_*.png`). Match each chart filename against
+    `f'{stem}_'` so prefix collisions like FS1 vs FS10 don't bleed.
+
+    Returns one list per scenario in `scenario_names` order; preserves
+    chart order within each group.
+    """
+    stems = [fds_stem_from_scenario_folder(s) for s in scenario_names]
+    return [
+        [c for c in chart_names if c.startswith(f'{stem}_')]
+        for stem in stems
+    ]
+
+
 def get_cc_columns(devc_df, param):
     """Return all non-stair, non-FSA column names for a given parameter type (temp/vis/pres/vel).
     These are the common corridor/lobby columns used for MOE worst-case."""

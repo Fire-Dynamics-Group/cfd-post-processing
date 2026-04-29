@@ -14,6 +14,7 @@ from typing import Literal
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 
@@ -36,6 +37,18 @@ class ReportRequest(BaseModel):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="CFD Post-Processing Sidecar", version="0.1.0")
+
+    # Sidecar binds to 127.0.0.1, so the only callers are the Tauri webview
+    # (origin tauri://localhost or https://tauri.localhost on Windows) and
+    # the Vite dev server (http://localhost:1420). Allow any origin for the
+    # preflight; credentials are never sent.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=False,
+    )
 
     @app.get("/health")
     def health() -> dict:

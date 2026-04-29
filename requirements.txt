@@ -36,5 +36,13 @@ fastapi==0.110.0
 uvicorn[standard]==0.27.1
 pydantic==2.6.4
 
+# PDF / image deps used by the report-branch modules
+# (pdfgeneration.py, pdf_generator.py, run_pdf_generator.py, slice_to_report.py).
+reportlab==4.0.9
+pdfrw==0.4
+PyPDF2==3.0.1
+opencv-python==4.8.1.78
+PyMuPDF==1.23.7
+
 # Test dependency.
 pytest==7.4.4
