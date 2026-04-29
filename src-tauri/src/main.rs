@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tauri::{Manager, RunEvent, State};
+use tauri::path::BaseDirectory;
 
 /// Holds the running sidecar process + the port it bound to.
 struct SidecarState {
@@ -33,7 +34,11 @@ fn pick_free_port() -> std::io::Result<u16> {
 /// `binaries/pipeline-server.exe` next to the main app binary. (Wiring up
 /// PyInstaller is a follow-up PR; the path is declared here so the config
 /// is correct.)
-fn spawn_sidecar(port: u16) -> Result<Child, String> {
+///
+/// `log_dir` is forwarded as `--log-dir` so the sidecar writes a rotating
+/// `sidecar.log` for post-mortem debugging on user machines.
+fn spawn_sidecar(port: u16, log_dir: &std::path::Path) -> Result<Child, String> {
+    let log_dir_str = log_dir.to_string_lossy().into_owned();
     if cfg!(debug_assertions) {
         // Project root = parent of src-tauri/
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -51,7 +56,14 @@ fn spawn_sidecar(port: u16) -> Result<Child, String> {
         };
 
         Command::new(python_cmd)
-            .args(["-m", "pipeline.server", "--port", &port.to_string()])
+            .args([
+                "-m",
+                "pipeline.server",
+                "--port",
+                &port.to_string(),
+                "--log-dir",
+                &log_dir_str,
+            ])
             .current_dir(&project_root)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -72,7 +84,7 @@ fn spawn_sidecar(port: u16) -> Result<Child, String> {
         }
 
         Command::new(sidecar)
-            .args(["--port", &port.to_string()])
+            .args(["--port", &port.to_string(), "--log-dir", &log_dir_str])
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
@@ -110,11 +122,22 @@ fn get_sidecar_port(state: State<SidecarState>) -> u16 {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let port = pick_free_port().map_err(|e| format!("pick_free_port: {e}"))?;
             println!("[tauri] picked sidecar port: {port}");
 
-            let child = spawn_sidecar(port)?;
+            // %LOCALAPPDATA%\CFDPostProcessing\logs on Windows.
+            let log_dir = app
+                .path()
+                .resolve("CFDPostProcessing/logs", BaseDirectory::LocalData)
+                .map_err(|e| format!("resolve log_dir: {e}"))?;
+            std::fs::create_dir_all(&log_dir)
+                .map_err(|e| format!("create_dir_all log_dir: {e}"))?;
+            println!("[tauri] sidecar log_dir: {}", log_dir.display());
+
+            let child = spawn_sidecar(port, &log_dir)?;
             println!("[tauri] sidecar spawned (pid {})", child.id());
 
             // Don't fail startup if /health is slow on first boot — surface

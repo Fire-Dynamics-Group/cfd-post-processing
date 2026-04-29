@@ -4,7 +4,6 @@ import json
 from helper_functions import return_paths_to_files, read_from_csv_skip_first_row, get_worst_case_devc, compute_last_time_step_not_tenable, max_or_min_is_worse, find_worst_in_column, get_column_prefix, get_cc_columns
 from scen_object_helper_functions import is_sprinklered, find_venting_from_fds, return_scenario_names
 from fds_output_utils import find_door_opening_times
-import PySimpleGUI as sg
 
 
 def _compute_per_prefix_worst_conditions(devc_df, path_to_devc_file, firefighting):

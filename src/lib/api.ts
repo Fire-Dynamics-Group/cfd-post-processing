@@ -1,5 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export type Step =
+  | "queued"
+  | "parsing"
+  | "charting"
+  | "drawing"
+  | "rendering"
+  | "saving"
+  | "done";
+
+export type JobStatus = "running" | "done" | "error";
+export type ErrorType = "ValidationError" | "PipelineError" | "InternalError";
+
 export interface ReportPayload {
   PATH: string;
   CLIENT_NAME: string;
@@ -9,30 +21,119 @@ export interface ReportPayload {
   HAS_EXTENDED_TRAVEL: boolean;
   MAX_TD: number | null;
   GUIDANCE: "BS9991" | "ADB";
+  OUTPUT_DIR?: string | null;
+}
+
+export interface JobError {
+  type: ErrorType;
+  message: string;
+  step?: Step | null;
+  details?: Record<string, unknown> | null;
+  traceback?: string | null;
+}
+
+export interface JobState {
+  id: string;
+  status: JobStatus;
+  step: Step;
+  progress_pct: number;
+  output_path: string | null;
+  warnings: string[];
+  error: JobError | null;
 }
 
 let cachedPort: number | null = null;
 
 async function getSidecarPort(): Promise<number> {
   if (cachedPort != null) return cachedPort;
-  const port = await invoke<number>("get_sidecar_port");
-  cachedPort = port;
-  return port;
+  cachedPort = await invoke<number>("get_sidecar_port");
+  return cachedPort;
 }
 
-export async function generateReport(
-  payload: ReportPayload
-): Promise<unknown> {
-  const port = await getSidecarPort();
-  const url = `http://127.0.0.1:${port}/generate-report`;
+async function baseUrl(): Promise<string> {
+  return `http://127.0.0.1:${await getSidecarPort()}`;
+}
+
+export class JobRequestError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public payload: unknown,
+  ) {
+    super(message);
+    this.name = "JobRequestError";
+  }
+}
+
+/** Map a Pydantic 422 error payload into ``{ FIELD_NAME: error_message }``.
+ * Pydantic produces ``{ detail: [{ loc: ['body', FIELD], msg, type }, ...] }``.
+ * Anything that doesn't match that shape returns ``{}`` so callers can fall
+ * back to the generic banner.
+ */
+export function parseFieldErrors(payload: unknown): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (typeof payload !== "object" || payload === null) return result;
+  const detail = (payload as { detail?: unknown }).detail;
+  if (!Array.isArray(detail)) return result;
+  for (const entry of detail) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const loc = (entry as { loc?: unknown }).loc;
+    const msg = (entry as { msg?: unknown }).msg;
+    if (!Array.isArray(loc) || typeof msg !== "string") continue;
+    // Skip the leading "body" segment; map the field name to the message.
+    const field = loc.slice(1).join(".");
+    if (field) result[field] = msg;
+  }
+  return result;
+}
+
+async function parseBody(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return await response.text();
+  }
+}
+
+export async function createJob(payload: ReportPayload): Promise<{ job_id: string }> {
+  const url = `${await baseUrl()}/jobs`;
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`HTTP ${response.status}: ${text}`);
+    throw new JobRequestError(
+      `HTTP ${response.status}`,
+      response.status,
+      await parseBody(response),
+    );
   }
   return response.json();
+}
+
+export async function pollJob(jobId: string): Promise<JobState> {
+  const url = `${await baseUrl()}/jobs/${jobId}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new JobRequestError(
+      `HTTP ${response.status}`,
+      response.status,
+      await parseBody(response),
+    );
+  }
+  return response.json();
+}
+
+// Lazy-import so the Tauri shell plugin isn't pulled into the bundle until
+// after a report completes (and so non-Tauri test/storybook contexts don't
+// fail to resolve the import).
+export async function openInWord(path: string): Promise<void> {
+  const { openPath } = await import("@tauri-apps/plugin-opener");
+  await openPath(path);
+}
+
+export async function revealInFolder(path: string): Promise<void> {
+  const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+  await revealItemInDir(path);
 }

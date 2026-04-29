@@ -1,3 +1,4 @@
+import logging
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,6 +9,18 @@ from pathlib import Path
 
 # from auto_report import scenario_names
 from constants import growthRateObject, chart_config, devc_chart_constants, font_name_normal
+
+
+logger = logging.getLogger(__name__)
+
+
+class ChartPlotError(Exception):
+    """Raised when a chart fails to plot. Carries the offending CSV path so
+    the orchestrator can collect it as a non-fatal warning on the job."""
+
+    def __init__(self, message: str, csv_path: str | None = None):
+        super().__init__(message)
+        self.csv_path = csv_path
 
 from helper_functions import return_paths_to_files, find_worst_case_column_name, filter_dataframe_by_column_starting_with_string, read_from_csv_skip_first_row, get_column_prefix
 from fds_output_utils import find_door_opening_times
@@ -159,15 +172,13 @@ def plot_line(x_data, y_data, label_text, line_color='blue', line_width=0.75, li
     try:
         plt.plot(x_data, y_data, color=line_color, linewidth=line_width, label=label_text, linestyle=line_style)
     except Exception as e:
-        import PySimpleGUI as sg
-        import numpy as np
-        sg.popup_error(
-            f"Error plotting line:\n{e}\n\n"
-            f"CFD csv file may not have enough rows\n"
-            f"CSV path: {csv_path}"
+        logger.warning(
+            "plot_line failed for %r (csv_path=%s): %s", label_text, csv_path, e
         )
-        # Do not raise, so the GUI stays open
-        return
+        raise ChartPlotError(
+            f"Error plotting line {label_text!r}: {e}. CSV may have too few rows.",
+            csv_path=csv_path,
+        ) from e
 
 def plot_tenable_line(tenable_limit):
     plt.axhline(y=tenable_limit, color='r', linestyle='--',label="Tenability Limit", linewidth=0.75)

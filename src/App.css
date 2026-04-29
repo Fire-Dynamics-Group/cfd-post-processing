@@ -115,3 +115,31 @@ button.secondary:hover {
   background: #fdeaea;
   border: 1px solid #e29494;
 }
+
+.status-area.running {
+  background: #eef4fc;
+  border: 1px solid #b8cef0;
+}
+
+.status-area progress {
+  width: 100%;
+  margin: 6px 0;
+}
+
+.status-area .muted {
+  color: #5b6470;
+  font-size: 11px;
+}
+
+.status-area .post-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.field-error {
+  grid-column: 2;
+  color: #b3261e;
+  font-size: 12px;
+  margin-top: -4px;
+}
