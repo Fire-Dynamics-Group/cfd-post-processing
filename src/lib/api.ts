@@ -9,7 +9,7 @@ export type Step =
   | "saving"
   | "done";
 
-export type JobStatus = "running" | "done" | "error";
+export type JobStatus = "running" | "completed" | "failed";
 export type ErrorType = "ValidationError" | "PipelineError" | "InternalError";
 
 export interface ReportPayload {
@@ -139,4 +139,36 @@ export async function openInWord(path: string): Promise<void> {
 export async function revealInFolder(path: string): Promise<void> {
   const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
   await revealItemInDir(path);
+}
+
+/** Build the JSON blob that the Copy diagnostic button writes to the
+ * clipboard. Pure so we can unit-test the contract independent of any
+ * navigator.clipboard mock acrobatics. */
+export function buildDiagnosticBlob(state: JobState): string {
+  return JSON.stringify(
+    {
+      error: state.error,
+      step: state.step,
+      progress_pct: state.progress_pct,
+      warnings: state.warnings,
+    },
+    null,
+    2,
+  );
+}
+
+/** Copy a diagnostic blob to the clipboard with a textarea fallback for
+ * environments without ``navigator.clipboard``. */
+export async function copyDiagnostic(state: JobState): Promise<void> {
+  const blob = buildDiagnosticBlob(state);
+  try {
+    await navigator.clipboard.writeText(blob);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = blob;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  }
 }

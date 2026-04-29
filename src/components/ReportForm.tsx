@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  copyDiagnostic,
   createJob,
   JobRequestError,
   openInWord,
@@ -91,10 +92,11 @@ export default function ReportForm() {
           const state = await pollJob(job_id);
           if (state.status === "running") {
             setStatus({ kind: "running", jobId: job_id, state });
-          } else if (state.status === "done") {
+          } else if (state.status === "completed") {
             stopPolling();
             setStatus({ kind: "done", state });
           } else {
+            // "failed" — JobError payload drives the banner type.
             stopPolling();
             setStatus({ kind: "job-error", state });
           }
@@ -128,30 +130,6 @@ export default function ReportForm() {
           payload: null,
         });
       }
-    }
-  }
-
-  async function copyDiagnostic(state: JobState) {
-    const blob = JSON.stringify(
-      {
-        error: state.error,
-        step: state.step,
-        progress_pct: state.progress_pct,
-        warnings: state.warnings,
-      },
-      null,
-      2,
-    );
-    try {
-      await navigator.clipboard.writeText(blob);
-    } catch {
-      // Clipboard may be denied in some contexts; fall back to a textarea.
-      const ta = document.createElement("textarea");
-      ta.value = blob;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
     }
   }
 

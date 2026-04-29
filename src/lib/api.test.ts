@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   JobRequestError,
+  buildDiagnosticBlob,
+  copyDiagnostic,
   createJob,
   parseFieldErrors,
   pollJob,
+  type JobState,
   type ReportPayload,
 } from "./api";
 
@@ -162,6 +165,97 @@ describe("createJob", () => {
       }),
     );
     await expect(createJob(payload)).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+
+describe("buildDiagnosticBlob", () => {
+  const baseState: JobState = {
+    id: "abc",
+    status: "failed",
+    step: "rendering",
+    progress_pct: 0.7,
+    output_path: null,
+    warnings: ["chart_x had too few rows"],
+    error: {
+      type: "InternalError",
+      message: "RuntimeError: kaboom",
+      step: "rendering",
+      details: { hint: "look at devc" },
+      traceback: "Traceback...\n  kaboom\n",
+    },
+  };
+
+  it("includes error, step, progress, and warnings — and excludes id/output_path", () => {
+    const blob = buildDiagnosticBlob(baseState);
+    const parsed = JSON.parse(blob);
+    expect(parsed).toEqual({
+      error: baseState.error,
+      step: "rendering",
+      progress_pct: 0.7,
+      warnings: ["chart_x had too few rows"],
+    });
+    expect(parsed.id).toBeUndefined();
+    expect(parsed.output_path).toBeUndefined();
+  });
+
+  it("produces pretty-printed JSON (indent=2)", () => {
+    const blob = buildDiagnosticBlob(baseState);
+    expect(blob).toContain("\n  ");
+  });
+});
+
+
+describe("copyDiagnostic", () => {
+  const state: JobState = {
+    id: "abc",
+    status: "failed",
+    step: "saving",
+    progress_pct: 0.95,
+    output_path: null,
+    warnings: [],
+    error: {
+      type: "InternalError",
+      message: "boom",
+      step: "saving",
+      details: null,
+      traceback: "tb",
+    },
+  };
+
+  it("calls navigator.clipboard.writeText with the diagnostic blob when available", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      get: () => ({ writeText }),
+      configurable: true,
+    });
+
+    await copyDiagnostic(state);
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const [blob] = writeText.mock.calls[0] as unknown as [string];
+    expect(JSON.parse(blob)).toEqual(JSON.parse(buildDiagnosticBlob(state)));
+  });
+
+  it("falls back to the textarea path when navigator.clipboard rejects", async () => {
+    const writeText = vi.fn(async () => {
+      throw new Error("permission denied");
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      get: () => ({ writeText }),
+      configurable: true,
+    });
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", {
+      value: execCommand,
+      configurable: true,
+      writable: true,
+    });
+
+    await copyDiagnostic(state);
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(execCommand).toHaveBeenCalledWith("copy");
   });
 });
 
