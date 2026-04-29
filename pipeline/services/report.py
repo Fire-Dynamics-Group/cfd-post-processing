@@ -25,34 +25,29 @@ from __future__ import annotations
 
 import datetime
 import logging
-import math
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from docx import Document
-from docx.shared import Inches, Pt, RGBColor
-from docxtpl import DocxTemplate, InlineImage
+# Pin matplotlib's headless backend before any chart code imports it.
+# The pipeline writes PNGs to disk and never displays them; without this,
+# a bundled .exe on a machine without Tk/Qt may try to load a GUI backend
+# and fail. setdefault only mutates os.environ — it does not import
+# matplotlib, so the lazy-import contract still holds.
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 from pydantic import BaseModel, Field
 
-# Vendored-module imports. ``pipeline/`` must be on sys.path before this
-# module is imported (server.py + tests/conftest.py both ensure that).
-from constants import font_name_light
-from helper_functions import (
-    find_all_files_of_type,
-    group_charts_by_scenario,
-    round_to,
-)
-from hrr_graph import run_hrr_charts, run_devc_charts
-from report_draw import run_all_report_draw
-from report_gen_helper_functions import scen_results_values
-from scen_object_helper_functions import return_fds_version
-from scenarios_object import create_scenario_object
-from helper_functions import return_paths_to_files
-from variable_text import Extended_travel_1, Extended_travel_2
-
 from .job import Step
+
+# NOTE on lazy imports (PR 3 decision #17):
+# Heavy imports — docx, docxtpl, matplotlib (via hrr_graph), fdsreader, lxml,
+# PIL (via report_draw), reportlab — are deferred into the function bodies
+# that use them so that ``import pipeline.services.report`` stays cheap
+# (~ms vs ~seconds). The bundled sidecar's cold start fold the first-import
+# cost into the first job's run, where the user already expects a wait.
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +96,12 @@ ProgressCallback = Callable[[Step, float], None]
 
 def run_orchestrator(req: ReportRequest, on_progress: ProgressCallback) -> ReportResult:
     """End-to-end report generation against a real FDS run directory."""
+    from docxtpl import DocxTemplate
+
+    from scenarios_object import create_scenario_object
+    from scen_object_helper_functions import return_fds_version
+    from report_draw import run_all_report_draw
+
     warnings: list[str] = []
 
     # --- PARSING ----------------------------------------------------------
@@ -208,23 +209,32 @@ def _resolve_output_path(req: ReportRequest) -> Path:
 
 
 def _resolve_template_path() -> Path:
-    """Locate ``Template CFD Report.docx``.
+    return _resolve_resource("Template CFD Report.docx")
 
-    Lookup order:
-      1. CWD (matches legacy and how Tauri spawns the dev sidecar).
-      2. Project root (parent of the ``pipeline/`` dir) as a fallback when
-         pytest runs from elsewhere.
-    Raises if neither has the template.
+
+def _resolve_resource(filename: str) -> Path:
+    """Find a bundled resource by walking the standard tiers.
+
+    Order, first match wins:
+      1. ``sys._MEIPASS`` — set by the PyInstaller bootloader to the dir
+         where data files are extracted (onedir: ``_internal/``; onefile:
+         per-run ``_MEIxxxx``).
+      2. ``Path(sys.executable).parent`` — sibling of the bundled exe;
+         redundant in our onedir layout but cheap to check and matches
+         what users see when they unzip the install.
+      3. ``Path(__file__).resolve().parents[2]`` — project root in dev.
     """
-    candidates = [
-        Path("Template CFD Report.docx"),
-        Path(__file__).resolve().parents[2] / "Template CFD Report.docx",
-    ]
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / filename)
+    candidates.append(Path(sys.executable).parent / filename)
+    candidates.append(Path(__file__).resolve().parents[2] / filename)
     for c in candidates:
         if c.exists():
             return c
     raise FileNotFoundError(
-        "Template CFD Report.docx not found. Looked in: "
+        f"{filename!r} not found. Looked in: "
         + ", ".join(str(c) for c in candidates)
     )
 
@@ -242,6 +252,9 @@ def _run_cfd_charts_with_progress(
 ) -> None:
     """Run the legacy chart pipeline scenario-by-scenario so the UI can show
     incremental progress during this phase (it dominates wall time)."""
+    from helper_functions import return_paths_to_files
+    from hrr_graph import run_devc_charts, run_hrr_charts
+
     n = len(scenario_names)
     for index, scenario_name in enumerate(scenario_names):
         path_to_hrr_file, _, path_to_fds_file, path_to_devc_file, error_list = (
@@ -352,6 +365,10 @@ def build_context(
     post-processing step but is *not* a docxtpl tag; keeping it out of the
     ctx avoids leaking implementation detail into the rendered template.
     """
+    from helper_functions import round_to
+    from report_gen_helper_functions import scen_results_values
+    from variable_text import Extended_travel_1, Extended_travel_2
+
     today = datetime.datetime.today()
     ctx: dict[str, Any] = {
         "PATH": req.PATH,
@@ -441,7 +458,7 @@ def build_context(
 
 def _attach_chart_images(
     ctx: dict[str, Any],
-    doc: DocxTemplate,
+    doc: "DocxTemplate",
     charts_dir: Path,
     scenario_names: list[str],
     FSA_scenarios: list[str],
@@ -452,6 +469,10 @@ def _attach_chart_images(
 
     Mirrors the legacy ``insert_charts`` (main.py:273-313).
     """
+    from docx.shared import Inches
+    from docxtpl import InlineImage
+    from helper_functions import find_all_files_of_type, group_charts_by_scenario
+
     chart_names = find_all_files_of_type(str(charts_dir), suffix=".png")
     charts_by_scenario = group_charts_by_scenario(chart_names, scenario_names)
 
@@ -494,6 +515,9 @@ def _attach_chart_images(
 def _replace_table_cell_content(
     cell: Any, text: str, *, is_bold: bool = False, alignment: int = 1
 ) -> None:
+    from docx.shared import Pt, RGBColor
+    from constants import font_name_light
+
     cell.text = text
     paragraphs = cell.paragraphs
     paragraphs[0].alignment = alignment
@@ -539,6 +563,8 @@ def _populate_scenario_table(
     scenario_names: list[str],
     scenarios_object: dict[str, Any],
 ) -> None:
+    from helper_functions import round_to
+
     _alter_table_rows(total_rows=len(scenario_names), table=table)
     for idx, name in enumerate(scenario_names):
         row_index = idx + 1
@@ -602,6 +628,9 @@ def _populate_results_table(
     scenarios: list[str],
     scenario_nums: list[int],
 ) -> None:
+    from helper_functions import round_to
+    from report_gen_helper_functions import scen_results_values
+
     results_tables = _locate_tables_by_cell(document, 0, -1, "Meets Performance")
     if not firefighting:
         moe_results_table = results_tables[0]
@@ -671,14 +700,7 @@ def _populate_references(
 
 
 def _resolve_references_csv() -> Path:
-    candidates = [
-        Path("references.csv"),
-        Path(__file__).resolve().parents[2] / "references.csv",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    raise FileNotFoundError("references.csv not found")
+    return _resolve_resource("references.csv")
 
 
 def _postprocess_docx(
@@ -695,6 +717,8 @@ def _postprocess_docx(
     that docxtpl can't express (cell-by-cell formatting, row deletion,
     references list).
     """
+    from docx import Document
+
     document = Document(str(output_path))
 
     # Scenario table is fixed at index 2 in the legacy template.

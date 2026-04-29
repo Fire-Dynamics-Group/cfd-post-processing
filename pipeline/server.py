@@ -30,6 +30,15 @@ _PIPELINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PIPELINE_DIR not in sys.path:
     sys.path.insert(0, _PIPELINE_DIR)
 
+# In a PyInstaller bundle, chdir to the MEIPASS extraction dir so legacy
+# relative-path lookups in vendored modules (e.g. report_draw.create_legend's
+# ``ImageFont.truetype('SEGOEUIL.TTF', ...)``) find their bundled
+# resources. _MEIPASS is unset under a normal Python interpreter, so this
+# is a no-op in dev / CI. (PR 3.)
+_meipass = getattr(sys, "_MEIPASS", None)
+if _meipass:
+    os.chdir(_meipass)
+
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware

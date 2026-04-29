@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tauri::{Manager, RunEvent, State};
+use tauri::{AppHandle, Manager, RunEvent, State};
 use tauri::path::BaseDirectory;
 
 /// Holds the running sidecar process + the port it bound to.
@@ -30,15 +30,22 @@ fn pick_free_port() -> std::io::Result<u16> {
 ///
 /// Dev (debug builds): runs `python -m pipeline.server --port <N>` from the
 /// project root (one level above `src-tauri/`).
-/// Prod (release builds): expects a PyInstaller-produced sidecar at
-/// `binaries/pipeline-server.exe` next to the main app binary. (Wiring up
-/// PyInstaller is a follow-up PR; the path is declared here so the config
-/// is correct.)
+///
+/// Prod (release builds): runs the PyInstaller-produced onedir bundle
+/// shipped via Tauri's `bundle.resources`. The exe lives at
+/// `<Resource>/pipeline-server-x86_64-pc-windows-msvc/pipeline-server.exe`;
+/// CWD is set to that directory so the sidecar's `os.chdir(_MEIPASS)` and
+/// the legacy relative-path lookups (e.g. `'SEGOEUIL.TTF'`) resolve.
 ///
 /// `log_dir` is forwarded as `--log-dir` so the sidecar writes a rotating
 /// `sidecar.log` for post-mortem debugging on user machines.
-fn spawn_sidecar(port: u16, log_dir: &std::path::Path) -> Result<Child, String> {
+fn spawn_sidecar(
+    app: &AppHandle,
+    port: u16,
+    log_dir: &std::path::Path,
+) -> Result<Child, String> {
     let log_dir_str = log_dir.to_string_lossy().into_owned();
+
     if cfg!(debug_assertions) {
         // Project root = parent of src-tauri/
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -55,7 +62,7 @@ fn spawn_sidecar(port: u16, log_dir: &std::path::Path) -> Result<Child, String> 
             "python".to_string()
         };
 
-        Command::new(python_cmd)
+        return Command::new(python_cmd)
             .args([
                 "-m",
                 "pipeline.server",
@@ -68,28 +75,43 @@ fn spawn_sidecar(port: u16, log_dir: &std::path::Path) -> Result<Child, String> 
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|e| format!("failed to spawn dev sidecar: {e}"))
-    } else {
-        // Production: PyInstaller-built binary. Tauri places externalBin
-        // entries next to the main exe with the target triple suffix stripped.
-        let exe_dir = std::env::current_exe()
-            .map_err(|e| format!("current_exe: {e}"))?
-            .parent()
-            .ok_or_else(|| "no parent dir for current_exe".to_string())?
-            .to_path_buf();
-
-        let mut sidecar = exe_dir.join("binaries").join("pipeline-server");
-        if cfg!(target_os = "windows") {
-            sidecar.set_extension("exe");
-        }
-
-        Command::new(sidecar)
-            .args(["--port", &port.to_string(), "--log-dir", &log_dir_str])
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| format!("failed to spawn release sidecar: {e}"))
+            .map_err(|e| format!("failed to spawn dev sidecar: {e}"));
     }
+
+    // Production: locate the bundled sidecar exe. Tauri's resource glob
+    // handling can map `binaries/<dir>/**/*` to either `<Resource>/<dir>/...`
+    // or `<Resource>/...` depending on how the base is computed; probe a
+    // small set of candidates rather than commit to one and break the
+    // installer if the convention shifts between versions.
+    let candidate_relative_paths = [
+        "binaries/pipeline-server-x86_64-pc-windows-msvc/pipeline-server.exe",
+        "pipeline-server-x86_64-pc-windows-msvc/pipeline-server.exe",
+        "pipeline-server.exe",
+    ];
+    let resolver = app.path();
+    let sidecar_exe = candidate_relative_paths
+        .iter()
+        .filter_map(|rel| resolver.resolve(rel, BaseDirectory::Resource).ok())
+        .find(|p| p.exists())
+        .ok_or_else(|| {
+            format!(
+                "Could not locate bundled sidecar in Resource dir. Tried: {}",
+                candidate_relative_paths.join(", ")
+            )
+        })?;
+
+    let sidecar_dir = sidecar_exe
+        .parent()
+        .ok_or_else(|| "no parent for sidecar exe".to_string())?
+        .to_path_buf();
+
+    Command::new(&sidecar_exe)
+        .args(["--port", &port.to_string(), "--log-dir", &log_dir_str])
+        .current_dir(&sidecar_dir)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("failed to spawn release sidecar: {e}"))
 }
 
 /// Block until `GET http://127.0.0.1:<port>/health` returns HTTP 200, or until
@@ -137,7 +159,7 @@ fn main() {
                 .map_err(|e| format!("create_dir_all log_dir: {e}"))?;
             println!("[tauri] sidecar log_dir: {}", log_dir.display());
 
-            let child = spawn_sidecar(port, &log_dir)?;
+            let child = spawn_sidecar(app.handle(), port, &log_dir)?;
             println!("[tauri] sidecar spawned (pid {})", child.id());
 
             // Don't fail startup if /health is slow on first boot — surface
