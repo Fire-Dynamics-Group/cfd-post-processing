@@ -274,7 +274,21 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
             ) = return_paths_to_files(
                 scenario_name=name, dir_path=root, new_folder_structure=True
             )
-            errors.extend(error_list)
+            if error_list:
+                # ``return_paths_to_files`` reports missing .fds / hrr.csv /
+                # devc.csv as errors and substitutes ``'error'`` placeholders
+                # for the absent paths. Real-world Finchley-style runs sit
+                # next to legacy ``_Rerun`` folders that aren't real
+                # scenarios — handing the placeholders to pandas would
+                # crash the whole request. Skip the subdir, surface the
+                # errors so the UI can show them, and remove the empty
+                # scenario_dir we just created.
+                errors.extend(error_list)
+                try:
+                    os.rmdir(scenario_dir)
+                except OSError:
+                    pass
+                continue
 
             run_hrr_charts(
                 path_to_fds_file,

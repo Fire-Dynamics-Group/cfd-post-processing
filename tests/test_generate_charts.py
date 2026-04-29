@@ -115,3 +115,75 @@ def test_generate_charts_400_when_path_missing(tmp_path, monkeypatch):
         json={"PATH": str(tmp_path / "does-not-exist"), "PROJECT_NAME": "Test"},
     )
     assert resp.status_code == 400
+
+
+def test_generate_charts_skips_subdirs_with_missing_files(tmp_path, monkeypatch):
+    """Real-world fixture (Finchley) has a sibling 'FS2_Rerun' folder next to
+    valid scenario dirs. ``return_paths_to_files`` reports an error_list
+    naming the missing .fds/hrr/devc files for it. The endpoint must skip
+    that subdir (no chart generation, no crash) and surface the errors in
+    the response so the UI can show them.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "FS1_FSA").mkdir()
+    (project / "FS2_Rerun").mkdir()
+
+    captured: list[tuple[str, str, bool]] = []
+
+    def fake_paths(scenario_name, dir_path, new_folder_structure):
+        if scenario_name == "FS2_Rerun":
+            return (
+                f"{dir_path}/{scenario_name}/error",
+                f"{dir_path}/{scenario_name}",
+                f"{dir_path}/{scenario_name}/error",
+                f"{dir_path}/{scenario_name}/error",
+                [
+                    f"No fds file found in {dir_path}/{scenario_name}",
+                    f"No devc file found in {dir_path}/{scenario_name}",
+                    f"No hrr file found in {dir_path}/{scenario_name}",
+                ],
+            )
+        return (
+            f"{dir_path}/{scenario_name}/hrr.csv",
+            f"{dir_path}/{scenario_name}",
+            f"{dir_path}/{scenario_name}/scen.fds",
+            f"{dir_path}/{scenario_name}/devc.csv",
+            [],
+        )
+
+    def fake_hrr(path_to_fds, path_to_hrr, new_dir_path, firefighting=False):
+        captured.append(("hrr", new_dir_path, firefighting))
+        with open(os.path.join(new_dir_path, "hrr_chart.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+
+    def fake_devc(path_to_devc, path_to_fds, new_dir_path, firefighting=False):
+        captured.append(("devc", new_dir_path, firefighting))
+        with open(os.path.join(new_dir_path, "devc_chart.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+
+    monkeypatch.setattr(server, "return_paths_to_files", fake_paths)
+    monkeypatch.setattr(server, "run_hrr_charts", fake_hrr)
+    monkeypatch.setattr(server, "run_devc_charts", fake_devc)
+    monkeypatch.setattr(server, "CHARTS_BASE", str(tmp_path / "out"))
+
+    client = TestClient(server.create_app())
+    resp = client.post(
+        "/generate-charts",
+        json={"PATH": str(project), "PROJECT_NAME": "Test"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    scenarios_by_name = {s["name"]: s for s in body["scenarios"]}
+    assert list(scenarios_by_name) == ["FS1_FSA"], (
+        "FS2_Rerun should be skipped: it has no .fds/hrr/devc files"
+    )
+
+    # Errors from the bad subdir surfaced in the response.
+    assert any("FS2_Rerun" in e for e in body["errors"])
+
+    # No chart helpers invoked for the bad subdir.
+    captured_dirs = {entry[1] for entry in captured}
+    assert all("FS2_Rerun" not in d for d in captured_dirs)
