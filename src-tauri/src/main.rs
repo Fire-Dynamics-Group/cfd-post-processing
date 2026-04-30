@@ -265,3 +265,41 @@ fn main() {
             }
         });
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    /// Spawns a long-running child, assigns it to a Job Object, drops the
+    /// job, and verifies the kernel terminated the child via
+    /// KILL_ON_JOB_CLOSE. This is the load-bearing safety net that makes
+    /// auto-updates immune to PyInstaller orphan sidecars — if it ever
+    /// regresses, NSIS installs will start failing on locked DLLs again.
+    #[test]
+    fn job_object_kills_child_when_dropped() {
+        let mut child = Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn ping");
+
+        {
+            let job = assign_sidecar_to_job(&child).expect("assign to job");
+            // Job dropped at end of scope -> KILL_ON_JOB_CLOSE fires.
+            drop(job);
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => thread::sleep(Duration::from_millis(50)),
+                Err(e) => panic!("try_wait error: {e}"),
+            }
+        }
+
+        let _ = child.kill();
+        panic!("child still alive after job dropped — KILL_ON_JOB_CLOSE did not fire");
+    }
+}
