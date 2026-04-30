@@ -1,6 +1,6 @@
 [package]
 name = "cfd-post-processing"
-version = "0.3.0-rc.2"
+version = "0.3.0-rc.3"
 description = "Tauri shell for the CFD Post-Processing desktop app."
 authors = ["Fire Dynamics Group"]
 license = ""
@@ -21,6 +21,9 @@ tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[target.'cfg(windows)'.dependencies]
+win32job = "2"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

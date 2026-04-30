@@ -10,10 +10,22 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, RunEvent, State};
 use tauri::path::BaseDirectory;
 
+#[cfg(windows)]
+use win32job::Job;
+
 /// Holds the running sidecar process + the port it bound to.
+///
+/// On Windows, also holds a Job Object handle with `KILL_ON_JOB_CLOSE`. The
+/// job object is what guarantees the sidecar dies when this process dies for
+/// *any* reason — graceful exit, panic, NSIS update killing us, Task Manager
+/// — without which PyInstaller's `_internal/*.dll` stays locked and the next
+/// install fails. We keep the handle in app state so the only point at which
+/// the job is destroyed is when the parent process exits.
 struct SidecarState {
     port: u16,
     child: Mutex<Option<Child>>,
+    #[cfg(windows)]
+    _job: Option<Job>,
 }
 
 /// Reserve an OS-assigned free TCP port on 127.0.0.1, then close the socket so
@@ -141,6 +153,47 @@ fn get_sidecar_port(state: State<SidecarState>) -> u16 {
     state.port
 }
 
+/// Explicitly stop the sidecar. Called from the JS updater before
+/// `downloadAndInstall()` so NSIS doesn't fight a live PyInstaller for
+/// `_internal/*.dll` locks. The Job Object also catches this case, but
+/// kicking the child first lets the OS release file handles deterministically
+/// (see Tauri issue #12309 for the race we're sidestepping).
+#[tauri::command]
+fn shutdown_sidecar(state: State<SidecarState>) -> Result<(), String> {
+    let mut guard = state
+        .child
+        .lock()
+        .map_err(|e| format!("sidecar lock poisoned: {e}"))?;
+    if let Some(mut child) = guard.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+        println!("[tauri] sidecar shut down on request");
+    }
+    Ok(())
+}
+
+/// Bind the freshly spawned sidecar to a Job Object so it inherits this
+/// process's lifetime. KILL_ON_JOB_CLOSE means: when our last handle to the
+/// job closes (which happens when our process dies, however it dies), the
+/// kernel terminates every member. PyInstaller's onedir bootstrap re-execs
+/// into `_internal\`, but `AssignProcessToJobObject` propagates by default,
+/// so assigning the bootstrap PID covers the re-exec too.
+#[cfg(windows)]
+fn assign_sidecar_to_job(child: &Child) -> Result<Job, String> {
+    use std::os::windows::io::AsRawHandle;
+
+    let job = Job::create().map_err(|e| format!("CreateJobObject: {e}"))?;
+    let mut info = job
+        .query_extended_limit_info()
+        .map_err(|e| format!("query_extended_limit_info: {e}"))?;
+    info.limit_kill_on_job_close();
+    job.set_extended_limit_info(&info)
+        .map_err(|e| format!("set_extended_limit_info: {e}"))?;
+    job.assign_process(child.as_raw_handle() as isize)
+        .map_err(|e| format!("AssignProcessToJobObject: {e}"))?;
+    Ok(job)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -164,6 +217,20 @@ fn main() {
             let child = spawn_sidecar(app.handle(), port, &log_dir)?;
             println!("[tauri] sidecar spawned (pid {})", child.id());
 
+            #[cfg(windows)]
+            let job = match assign_sidecar_to_job(&child) {
+                Ok(j) => {
+                    println!("[tauri] sidecar bound to Job Object (KILL_ON_JOB_CLOSE)");
+                    Some(j)
+                }
+                Err(err) => {
+                    eprintln!(
+                        "[tauri] WARNING: Job Object setup failed: {err} — sidecar may orphan if parent dies abruptly"
+                    );
+                    None
+                }
+            };
+
             // Don't fail startup if /health is slow on first boot — surface
             // the error to logs but let the UI come up so the user can see
             // a meaningful message in the form's status area.
@@ -176,10 +243,12 @@ fn main() {
             app.manage(SidecarState {
                 port,
                 child: Mutex::new(Some(child)),
+                #[cfg(windows)]
+                _job: job,
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_sidecar_port])
+        .invoke_handler(tauri::generate_handler![get_sidecar_port, shutdown_sidecar])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
