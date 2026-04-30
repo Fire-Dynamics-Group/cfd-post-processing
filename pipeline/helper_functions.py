@@ -71,6 +71,24 @@ def return_all_subfolders(path_to_dir):
 
     return [ item for item in os.listdir(path_to_dir) if os.path.isdir(os.path.join(path_to_dir, item)) ]
 
+
+def _find_folder_with_run_csvs(parent_dir, candidates):
+    """Return the first candidate subfolder of `parent_dir` that contains
+    both a *_devc.csv and a *_hrr.csv file, or None if no candidate qualifies.
+    """
+    for name in candidates:
+        sub = os.path.join(parent_dir, name)
+        try:
+            entries = listdir(sub)
+        except OSError:
+            continue
+        has_devc = any(f.endswith("devc.csv") for f in entries)
+        has_hrr = any(f.endswith("hrr.csv") for f in entries)
+        if has_devc and has_hrr:
+            return name
+    return None
+
+
 def return_paths_to_files(scenario_name, dir_path='graph_generation', new_folder_structure=False):
     error_list = []
     if new_folder_structure == False:
@@ -87,12 +105,20 @@ def return_paths_to_files(scenario_name, dir_path='graph_generation', new_folder
         else:
             # checks if pointed directly towards the folder with one run only, no subfolders
             path_to_scen_directory = dir_path
-        # TODO: check if intermediate folder
+        # PyroSim leaves a sibling project folder next to the FDS run output
+        # (e.g. ".../FS2_Rerun/<scenario>/" alongside ".../FS2_Rerun/<scenario>.fds_..._FDS/),
+        # so when multiple nested folders exist we prefer the one that actually
+        # holds devc.csv + hrr.csv. If none match we keep the first folder and
+        # let the missing-file checks below surface the error.
         has_nested_folder = return_all_subfolders(path_to_scen_directory)
-        if len(has_nested_folder) > 0: # should error if more than one folder
-            path_to_scen_directory += f'/{has_nested_folder[0]}'
-            if len(has_nested_folder) > 1:
-                error_list.append(f"More than one folder found in {path_to_scen_directory} for scenario:{scenario_name}. Please remove non relevant folders.") 
+        if len(has_nested_folder) > 0:
+            run_folder = _find_folder_with_run_csvs(path_to_scen_directory, has_nested_folder)
+            if run_folder is not None:
+                path_to_scen_directory += f'/{run_folder}'
+            else:
+                path_to_scen_directory += f'/{has_nested_folder[0]}'
+                if len(has_nested_folder) > 1:
+                    error_list.append(f"More than one folder found in {path_to_scen_directory} for scenario:{scenario_name}. Please remove non relevant folders.")
 
         fds_name = find_all_files_of_type(path_to_directory=path_to_scen_directory, suffix=".fds")
         if len(fds_name) == 0:

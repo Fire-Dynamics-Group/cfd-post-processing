@@ -320,12 +320,23 @@ def _run_charts_job(job_id: str, req: ChartsRequest) -> None:
         _ensure_chart_imports()
 
         root = req.PATH
-        sub_folders = sorted(
-            f for f in os.listdir(root) if os.path.isdir(os.path.join(root, f))
-        )
-        if not sub_folders:
-            sub_folders = [os.path.basename(os.path.dirname(root))]
+        # If the user picked the FDS run folder itself (it already holds
+        # devc.csv + hrr.csv), honour that selection: treat it as a single
+        # scenario named after the leaf, parented to its containing folder.
+        # Otherwise list scenario subdirs as usual.
+        root_files = os.listdir(root)
+        if any(f.endswith("devc.csv") for f in root_files) and any(
+            f.endswith("hrr.csv") for f in root_files
+        ):
+            sub_folders = [os.path.basename(root)]
             root = os.path.dirname(root)
+        else:
+            sub_folders = sorted(
+                f for f in root_files if os.path.isdir(os.path.join(req.PATH, f))
+            )
+            if not sub_folders:
+                sub_folders = [os.path.basename(os.path.dirname(root))]
+                root = os.path.dirname(root)
 
         with _charts_jobs_lock:
             _charts_jobs[job_id]["scenarios_total"] = len(sub_folders)

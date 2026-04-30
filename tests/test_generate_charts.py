@@ -317,6 +317,65 @@ def test_generate_charts_progressive_visibility(tmp_path, monkeypatch):
     assert sorted(s["name"] for s in final["scenarios"]) == ["FS1_FSA", "FS2_MOE"]
 
 
+def test_generate_charts_uses_path_directly_when_it_contains_run_files(tmp_path, monkeypatch):
+    """Real Finchley case: user browses *into* a single FDS run folder
+    (the ``..._FDS`` directory holding ``_devc.csv`` + ``_hrr.csv``) instead
+    of selecting the parent. The endpoint must treat that folder as a
+    single scenario named after its basename and not re-target to its
+    parent (which would re-scan sibling PyroSim project folders and
+    skip the run)."""
+    leaf = tmp_path / "FS2_Rerun" / "0406_Plot84_FSA.fds_1777_FDS"
+    leaf.mkdir(parents=True)
+    (leaf / "0406_Plot84_FSA.fds").write_text("")
+    (leaf / "0406_Plot84_FSA_devc.csv").write_text("")
+    (leaf / "0406_Plot84_FSA_hrr.csv").write_text("")
+    # Sibling PyroSim project folder that the buggy fallback would have
+    # picked up by re-targeting to the parent.
+    sibling = tmp_path / "FS2_Rerun" / "0406_Plot84_FSA"
+    sibling.mkdir()
+    (sibling / "0406_Plot84_FSA.fds").write_text("")
+
+    captured: list[tuple[str, str, bool]] = []
+
+    def fake_hrr(path_to_fds, path_to_hrr, new_dir_path, firefighting=False):
+        captured.append(("hrr", new_dir_path, firefighting, path_to_hrr))
+        with open(os.path.join(new_dir_path, "hrr_chart.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+
+    def fake_devc(path_to_devc, path_to_fds, new_dir_path, firefighting=False):
+        captured.append(("devc", new_dir_path, firefighting, path_to_devc))
+        with open(os.path.join(new_dir_path, "devc_chart.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+
+    monkeypatch.setattr(server, "run_hrr_charts", fake_hrr)
+    monkeypatch.setattr(server, "run_devc_charts", fake_devc)
+    monkeypatch.setattr(server, "CHARTS_BASE", str(tmp_path / "out"))
+
+    client = TestClient(server.create_app())
+    resp = client.post(
+        "/generate-charts",
+        json={"PATH": str(leaf), "PROJECT_NAME": "Direct Leaf"},
+    )
+    assert resp.status_code == 202, resp.text
+    job_id = resp.json()["job_id"]
+
+    body = _wait_terminal(client, job_id)
+    assert body["status"] == "completed"
+    assert body["skipped"] == []
+    assert body["scenarios_total"] == 1
+
+    names = [s["name"] for s in body["scenarios"]]
+    assert names == [leaf.name], f"expected single scenario named {leaf.name}, got {names}"
+
+    paths_seen = {os.path.normpath(entry[3]) for entry in captured}
+    leaf_norm = os.path.normpath(str(leaf))
+    # Every chart helper must read the CSVs from the leaf the user picked,
+    # not from the PyroSim sibling.
+    assert all(p.startswith(leaf_norm) for p in paths_seen), (
+        f"chart helpers were called with paths outside the user-selected leaf {leaf_norm}: {paths_seen}"
+    )
+
+
 def test_generate_charts_failed_status_when_worker_raises(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
