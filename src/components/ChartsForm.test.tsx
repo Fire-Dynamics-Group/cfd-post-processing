@@ -24,6 +24,40 @@ function pollResponse(state: Record<string, unknown>) {
 }
 
 
+/** All current flows go: discover -> pick -> submit -> poll. The two
+ * legacy tests below pin partial-progress / skipped / error rendering and
+ * don't care about discovery details — they share this minimal stub of a
+ * single-scenario discovery so each test only mocks what's actually
+ * being verified. */
+function discoverResponse(scenarios: Array<{ id: string; label?: string }> = [
+  { id: "FS1_FSA", label: "FS1_FSA" },
+]) {
+  return new Response(
+    JSON.stringify({
+      scenarios: scenarios.map((s) => ({
+        id: s.id,
+        label: s.label ?? s.id,
+        fds_dir: `C:/runs/${s.id}`,
+      })),
+    }),
+    { status: 200 },
+  );
+}
+
+
+async function clickThroughToPicker(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByLabelText(/path to runs/i), "C:/runs");
+  await user.type(screen.getByLabelText(/project name/i), "Test");
+  await user.click(screen.getByRole("button", { name: /discover scenarios/i }));
+  await waitFor(() => {
+    expect(
+      screen.getByRole("button", { name: /^create charts/i }),
+    ).toBeInTheDocument();
+  });
+  await user.click(screen.getByRole("button", { name: /^create charts/i }));
+}
+
+
 describe("ChartsForm progressive UI", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
@@ -39,6 +73,13 @@ describe("ChartsForm progressive UI", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     vi.mocked(fetch)
+      // POST /discover-charts-scenarios -> 2 scenarios
+      .mockResolvedValueOnce(
+        discoverResponse([
+          { id: "FS1_FSA" },
+          { id: "FS2_MOE" },
+        ]),
+      )
       // POST /generate-charts -> {job_id}
       .mockResolvedValueOnce(postResponse("JOB"))
       // First poll: status=running, 1 of 2 scenarios complete.
@@ -91,9 +132,7 @@ describe("ChartsForm progressive UI", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<ChartsForm />);
 
-    await user.type(screen.getByLabelText(/path to runs/i), "C:/runs");
-    await user.type(screen.getByLabelText(/project name/i), "Test");
-    await user.click(screen.getByRole("button", { name: /create charts/i }));
+    await clickThroughToPicker(user);
 
     // After the first poll, the UI shows the running header + ChartViewer
     // with the single-scenario partial manifest visible.
@@ -122,6 +161,7 @@ describe("ChartsForm progressive UI", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     vi.mocked(fetch)
+      .mockResolvedValueOnce(discoverResponse([{ id: "FS1_FSA" }, { id: "FS2_Rerun" }]))
       .mockResolvedValueOnce(postResponse("JOB"))
       .mockResolvedValueOnce(
         pollResponse({
@@ -148,9 +188,7 @@ describe("ChartsForm progressive UI", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<ChartsForm />);
 
-    await user.type(screen.getByLabelText(/path to runs/i), "C:/runs");
-    await user.type(screen.getByLabelText(/project name/i), "Test");
-    await user.click(screen.getByRole("button", { name: /create charts/i }));
+    await clickThroughToPicker(user);
 
     await waitFor(() => {
       expect(
@@ -168,10 +206,100 @@ describe("ChartsForm progressive UI", () => {
     expect(screen.queryByText(/Please add/i)).not.toBeInTheDocument();
   });
 
+  it("discovers scenarios, lets the user pick a subset, then runs only those", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    vi.mocked(fetch)
+      // POST /discover-charts-scenarios -> 3 scenarios
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            scenarios: [
+              { id: "FS1_FDS", label: "FS1_FDS", fds_dir: "C:/runs/FS1_FDS" },
+              { id: "FS2_FDS", label: "FS2_FDS", fds_dir: "C:/runs/FS2_FDS" },
+              {
+                id: "FS2_Rerun/FS2_FDS",
+                label: "FS2_FDS",
+                fds_dir: "C:/runs/FS2_Rerun/FS2_FDS",
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )
+      // POST /generate-charts -> {job_id}
+      .mockResolvedValueOnce(postResponse("JOB"))
+      // First poll: completed
+      .mockResolvedValueOnce(
+        pollResponse({
+          job_id: "JOB",
+          status: "completed",
+          project_name: "Test",
+          scenarios: [
+            {
+              name: "FS1_FDS",
+              charts: [{ filename: "hrr.png", url: "/charts/JOB/FS1_FDS/hrr.png" }],
+            },
+            {
+              name: "FS2_Rerun/FS2_FDS",
+              charts: [
+                {
+                  filename: "hrr.png",
+                  url: "/charts/JOB/FS2_Rerun/FS2_FDS/hrr.png",
+                },
+              ],
+            },
+          ],
+          scenarios_total: 2,
+          errors: [],
+          skipped: [],
+          error: null,
+        }),
+      );
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<ChartsForm />);
+
+    await user.type(screen.getByLabelText(/path to runs/i), "C:/runs");
+    await user.type(screen.getByLabelText(/project name/i), "Test");
+    await user.click(screen.getByRole("button", { name: /discover scenarios/i }));
+
+    // Three checkboxes, all checked by default.
+    const checkboxes = await screen.findAllByRole("checkbox");
+    expect(checkboxes).toHaveLength(3);
+    checkboxes.forEach((cb) => expect(cb).toBeChecked());
+
+    // Uncheck the original FS2 (the second checkbox).
+    await user.click(checkboxes[1]);
+    expect(checkboxes[1]).not.toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: /create charts/i }));
+
+    // Confirm the second fetch was the SCENARIOS-bearing POST and that
+    // it carried only the two checked scenarios.
+    const generateCall = vi.mocked(fetch).mock.calls.find(
+      (c) => typeof c[0] === "string" && c[0].includes("/generate-charts"),
+    );
+    expect(generateCall).toBeTruthy();
+    const sentBody = JSON.parse(generateCall![1]!.body as string);
+    expect(sentBody.SCENARIOS).toHaveLength(2);
+    expect(sentBody.SCENARIOS.map((s: { id: string }) => s.id)).toEqual([
+      "FS1_FDS",
+      "FS2_Rerun/FS2_FDS",
+    ]);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /new run/i }),
+      ).toBeInTheDocument();
+    });
+  });
+
   it("surfaces a failed status as an error banner", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     vi.mocked(fetch)
+      .mockResolvedValueOnce(discoverResponse())
       .mockResolvedValueOnce(postResponse("JOB"))
       .mockResolvedValueOnce(
         pollResponse({
@@ -189,9 +317,7 @@ describe("ChartsForm progressive UI", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<ChartsForm />);
 
-    await user.type(screen.getByLabelText(/path to runs/i), "C:/runs");
-    await user.type(screen.getByLabelText(/project name/i), "Test");
-    await user.click(screen.getByRole("button", { name: /create charts/i }));
+    await clickThroughToPicker(user);
 
     // The error message appears in the banner's <div> directly; the same
     // text also appears inside the diagnostic <pre> (JSON payload), so

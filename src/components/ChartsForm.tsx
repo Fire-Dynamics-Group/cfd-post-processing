@@ -2,16 +2,24 @@ import { useRef, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   JobRequestError,
+  discoverChartsScenarios,
   pollChartsJob,
   startChartsJob,
   type ChartManifest,
   type ChartsPayload,
+  type ScenarioSelection,
 } from "../lib/api";
 import ChartViewer from "./ChartViewer";
 
 
 type Status =
   | { kind: "idle" }
+  | { kind: "discovering" }
+  | {
+      kind: "picking";
+      scenarios: ScenarioSelection[];
+      checked: Record<string, boolean>;
+    }
   | { kind: "submitting" }
   | { kind: "running"; jobId: string; manifest: ChartManifest; total: number }
   | { kind: "ok"; manifest: ChartManifest }
@@ -53,13 +61,40 @@ export default function ChartsForm() {
     }
   }
 
-  async function onSubmit(e: FormEvent) {
+  async function onDiscover(e: FormEvent) {
     e.preventDefault();
-    if (status.kind === "submitting" || status.kind === "running") return;
+    if (status.kind === "discovering" || status.kind === "submitting") return;
+    setStatus({ kind: "discovering" });
+    try {
+      const { scenarios } = await discoverChartsScenarios(values.PATH);
+      const checked: Record<string, boolean> = {};
+      for (const s of scenarios) checked[s.id] = true;
+      setStatus({ kind: "picking", scenarios, checked });
+    } catch (err) {
+      setStatus({
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+        payload: err instanceof JobRequestError ? err.payload : null,
+      });
+    }
+  }
+
+  function toggleScenario(id: string) {
+    setStatus((s) =>
+      s.kind === "picking"
+        ? { ...s, checked: { ...s.checked, [id]: !s.checked[id] } }
+        : s,
+    );
+  }
+
+  async function onCreateCharts() {
+    if (status.kind !== "picking") return;
+    const selected = status.scenarios.filter((s) => status.checked[s.id]);
+    if (selected.length === 0) return;
     setStatus({ kind: "submitting" });
 
     try {
-      const { job_id } = await startChartsJob(values);
+      const { job_id } = await startChartsJob({ ...values, SCENARIOS: selected });
       pollingJobIdRef.current = job_id;
       setStatus({
         kind: "running",
@@ -168,8 +203,60 @@ export default function ChartsForm() {
     );
   }
 
+  if (status.kind === "picking" || status.kind === "submitting") {
+    const isPicking = status.kind === "picking";
+    const scenarios = isPicking ? status.scenarios : [];
+    const checked = isPicking ? status.checked : {};
+    const selectedCount = scenarios.filter((s) => checked[s.id]).length;
+    return (
+      <div className="charts-picker">
+        <h2>Select scenarios to chart</h2>
+        <p className="muted">{values.PATH}</p>
+        {scenarios.length === 0 ? (
+          <div className="status-area">
+            No scenario folders found under this path. A scenario folder is one
+            that contains both <code>*_devc.csv</code> and <code>*_hrr.csv</code>.
+          </div>
+        ) : (
+          <ul className="scenario-list">
+            {scenarios.map((s) => (
+              <li key={s.id}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={!!checked[s.id]}
+                    disabled={!isPicking}
+                    onChange={() => toggleScenario(s.id)}
+                  />
+                  <span className="scenario-label">{s.label}</span>
+                  {s.id !== s.label && s.id !== "" && (
+                    <span className="muted scenario-path"> ({s.id})</span>
+                  )}
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="actions">
+          <button type="button" className="secondary" onClick={reset}>
+            Back
+          </button>
+          <button
+            type="button"
+            onClick={onCreateCharts}
+            disabled={!isPicking || selectedCount === 0}
+          >
+            {isPicking
+              ? `Create Charts (${selectedCount})`
+              : "Starting…"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <form className="report-form" onSubmit={onSubmit}>
+    <form className="report-form" onSubmit={onDiscover}>
       <label htmlFor="charts-path">Path to runs' root directory:</label>
       <div className="path-row">
         <input
@@ -192,8 +279,8 @@ export default function ChartsForm() {
       />
 
       <div className="actions">
-        <button type="submit" disabled={status.kind === "submitting"}>
-          {status.kind === "submitting" ? "Starting…" : "Create Charts"}
+        <button type="submit" disabled={status.kind === "discovering"}>
+          {status.kind === "discovering" ? "Discovering…" : "Discover scenarios"}
         </button>
       </div>
 

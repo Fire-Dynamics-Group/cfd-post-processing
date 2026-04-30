@@ -118,6 +118,19 @@ export async function createJob(payload: ReportPayload): Promise<{ job_id: strin
 export interface ChartsPayload {
   PATH: string;
   PROJECT_NAME: string;
+  SCENARIOS?: ScenarioSelection[];
+}
+
+export interface ScenarioSelection {
+  /** Forward-slash relative path from the discovered root, used as a
+   * unique key and as the output-dir name under ``CHARTS_BASE``. */
+  id: string;
+  /** Display name. The "FSA" detection used to derive the firefighting
+   * flag reads this string, so labels should preserve the FDS run
+   * folder's name (which always contains "FSA" for FSA scenarios). */
+  label: string;
+  /** Absolute path to the folder holding the .fds, _devc.csv, _hrr.csv. */
+  fds_dir: string;
 }
 
 export interface ChartManifestEntry {
@@ -157,6 +170,29 @@ export interface ChartsJobState {
   errors: string[];
   skipped: string[];
   error: string | null;
+}
+
+/** Discover scenario folders under ``PATH``. Used to populate the
+ * folder-picker checklist in charts mode. */
+export async function discoverChartsScenarios(
+  path: string,
+): Promise<{ scenarios: ScenarioSelection[] }> {
+  const response = await fetch(
+    `${await baseUrl()}/discover-charts-scenarios`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ PATH: path }),
+    },
+  );
+  if (!response.ok) {
+    throw new JobRequestError(
+      `HTTP ${response.status}`,
+      response.status,
+      await parseBody(response),
+    );
+  }
+  return response.json();
 }
 
 /** Kick off a charts job. Returns the ``job_id`` straight away — the

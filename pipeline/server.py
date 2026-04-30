@@ -75,11 +75,30 @@ from pipeline.services.report import (
 CHARTS_BASE = os.path.join(tempfile.gettempdir(), "cfd_post_processing_charts")
 
 
+class ScenarioSelection(BaseModel):
+    """One scenario the user picked from the discovery checklist.
+
+    ``id`` doubles as the output-dir name under ``CHARTS_BASE/<job_id>/``
+    and the URL segment served by the static mount, so it must be unique
+    within a request and filesystem-safe (forward slashes are fine and
+    create nested dirs).
+    """
+
+    id: str
+    label: str
+    fds_dir: str
+
+
 class ChartsRequest(BaseModel):
     """Charts-only payload — mirrors legacy ``run_only_charts.py``."""
 
     PATH: str = Field(..., description="Path to runs' root directory")
     PROJECT_NAME: str
+    SCENARIOS: list[ScenarioSelection] | None = None
+
+
+class DiscoverScenariosRequest(BaseModel):
+    PATH: str = Field(..., description="Path to scan for scenario folders")
 
 
 # Lazy-loaded chart helpers. Kept as module-level attributes (rather than
@@ -93,6 +112,7 @@ class ChartsRequest(BaseModel):
 return_paths_to_files = None
 run_hrr_charts = None
 run_devc_charts = None
+discover_scenarios = None
 
 
 def _ensure_chart_imports() -> None:
@@ -106,6 +126,16 @@ def _ensure_chart_imports() -> None:
     if run_devc_charts is None:
         from hrr_graph import run_devc_charts as _rdc
         run_devc_charts = _rdc
+
+
+def _ensure_discover_import() -> None:
+    """``discover_scenarios`` is just a directory walker — no matplotlib —
+    so it's safe to import on first use without paying the chart-helper
+    cold-start cost."""
+    global discover_scenarios
+    if discover_scenarios is None:
+        from helper_functions import discover_scenarios as _ds
+        discover_scenarios = _ds
 
 
 # Charts-job registry. Separate from the report-flow JobRegistry because
@@ -263,10 +293,24 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Unknown job id")
         return state.to_dict()
 
+    @app.post("/discover-charts-scenarios")
+    def discover_charts_scenarios(req: DiscoverScenariosRequest) -> dict[str, Any]:
+        if not os.path.isdir(req.PATH):
+            raise HTTPException(status_code=400, detail=f"PATH not found: {req.PATH}")
+        _ensure_discover_import()
+        return {"scenarios": discover_scenarios(req.PATH)}
+
     @app.post("/generate-charts", status_code=202)
     def start_charts_job(req: ChartsRequest) -> dict[str, str]:
         if not os.path.isdir(req.PATH):
             raise HTTPException(status_code=400, detail=f"PATH not found: {req.PATH}")
+        if req.SCENARIOS is not None:
+            for sel in req.SCENARIOS:
+                if not os.path.isdir(sel.fds_dir):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Scenario fds_dir not found: {sel.fds_dir}",
+                    )
 
         job_id = uuid.uuid4().hex
         with _charts_jobs_lock:
@@ -306,60 +350,119 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
     return app
 
 
+def _resolve_run_files(fds_dir):
+    """Pick the .fds / _devc.csv / _hrr.csv files inside ``fds_dir``.
+
+    Returns ``(path_to_fds, path_to_devc, path_to_hrr, error_list)``. The
+    error list mirrors the shape ``return_paths_to_files`` produces so the
+    skip/surface logic in ``_run_charts_job`` can stay uniform.
+    """
+    error_list = []
+    try:
+        entries = os.listdir(fds_dir)
+    except OSError as exc:
+        return None, None, None, [f"Cannot read {fds_dir}: {exc}"]
+    fds = [f for f in entries if f.endswith(".fds")]
+    devc = [f for f in entries if f.endswith("_devc.csv")]
+    hrr = [f for f in entries if f.endswith("_hrr.csv")]
+    if not fds:
+        error_list.append(f"No fds file found in {fds_dir}.")
+    if not devc:
+        error_list.append(f"No devc file found in {fds_dir}.")
+    if not hrr:
+        error_list.append(f"No hrr file found in {fds_dir}.")
+    if error_list:
+        return None, None, None, error_list
+    return (
+        os.path.join(fds_dir, fds[0]),
+        os.path.join(fds_dir, devc[0]),
+        os.path.join(fds_dir, hrr[0]),
+        [],
+    )
+
+
 def _run_charts_job(job_id: str, req: ChartsRequest) -> None:
     """Worker thread for /generate-charts.
 
-    Iterates over scenario subdirs in deterministic (sorted) order. For
-    each one: lazy-imports the chart helpers, runs ``run_hrr_charts`` +
-    ``run_devc_charts``, then atomically appends the new scenario's
-    manifest entry to the registry so polling clients see it immediately.
-    Subdirs whose ``return_paths_to_files`` reports errors are skipped
-    and their errors surfaced into the registry.
+    Two modes:
+    - **Explicit** (``req.SCENARIOS`` provided): iterate over the user-
+      selected scenarios from the discovery checklist and read files
+      directly from each entry's ``fds_dir``.
+    - **Legacy** (``SCENARIOS`` absent): fall back to enumerating
+      subdirs of ``req.PATH`` and resolving via ``return_paths_to_files``.
+
+    For each scenario we lazy-import the chart helpers, run
+    ``run_hrr_charts`` + ``run_devc_charts``, then atomically append the
+    new scenario's manifest entry to the registry so polling clients see
+    it immediately. Scenarios with missing files are skipped and the
+    errors surfaced into the registry.
     """
     try:
         _ensure_chart_imports()
 
-        root = req.PATH
-        # If the user picked the FDS run folder itself (it already holds
-        # devc.csv + hrr.csv), honour that selection: treat it as a single
-        # scenario named after the leaf, parented to its containing folder.
-        # Otherwise list scenario subdirs as usual.
-        root_files = os.listdir(root)
-        if any(f.endswith("devc.csv") for f in root_files) and any(
-            f.endswith("hrr.csv") for f in root_files
-        ):
-            sub_folders = [os.path.basename(root)]
-            root = os.path.dirname(root)
+        # Build a uniform list of scenarios to run: (name, label, fds_dir)
+        # where fds_dir=None means "resolve via return_paths_to_files".
+        if req.SCENARIOS is not None:
+            scenarios_to_run = [(s.id, s.label, s.fds_dir) for s in req.SCENARIOS]
+            root = req.PATH  # unused in explicit mode but kept for parity
         else:
-            sub_folders = sorted(
-                f for f in root_files if os.path.isdir(os.path.join(req.PATH, f))
-            )
-            if not sub_folders:
-                sub_folders = [os.path.basename(os.path.dirname(root))]
+            root = req.PATH
+            # If the user picked the FDS run folder itself (it already holds
+            # devc.csv + hrr.csv), honour that selection: treat it as a
+            # single scenario named after the leaf, parented to its
+            # containing folder. Otherwise list scenario subdirs as usual.
+            root_files = os.listdir(root)
+            if any(f.endswith("devc.csv") for f in root_files) and any(
+                f.endswith("hrr.csv") for f in root_files
+            ):
+                sub_folders = [os.path.basename(root)]
                 root = os.path.dirname(root)
+            else:
+                sub_folders = sorted(
+                    f for f in root_files if os.path.isdir(os.path.join(req.PATH, f))
+                )
+                if not sub_folders:
+                    sub_folders = [os.path.basename(os.path.dirname(root))]
+                    root = os.path.dirname(root)
+            scenarios_to_run = [(name, name, None) for name in sub_folders]
 
         with _charts_jobs_lock:
-            _charts_jobs[job_id]["scenarios_total"] = len(sub_folders)
+            _charts_jobs[job_id]["scenarios_total"] = len(scenarios_to_run)
 
         job_dir = os.path.join(CHARTS_BASE, job_id)
         os.makedirs(job_dir, exist_ok=True)
 
-        for name in sub_folders:
+        for name, label, fds_dir in scenarios_to_run:
             scenario_dir = os.path.join(job_dir, name)
             os.makedirs(scenario_dir, exist_ok=True)
 
-            firefighting = "FSA" in name
-            (
-                path_to_hrr_file,
-                _path_to_scen_directory,
-                path_to_fds_file,
-                path_to_devc_file,
-                error_list,
-            ) = return_paths_to_files(
-                scenario_name=name, dir_path=root, new_folder_structure=True
-            )
+            # Firefighting detection reads the scenario's *label* (the
+            # FDS-run folder name in explicit mode, or the wrapper folder
+            # name in legacy mode). In explicit mode the label always comes
+            # from the FDS run folder and so reliably contains "FSA" for
+            # FSA scenarios — fixing the misclassification that bit
+            # ``FS2_Rerun`` in the legacy path.
+            firefighting = "FSA" in label
+
+            if fds_dir is None:
+                (
+                    path_to_hrr_file,
+                    _path_to_scen_directory,
+                    path_to_fds_file,
+                    path_to_devc_file,
+                    error_list,
+                ) = return_paths_to_files(
+                    scenario_name=name, dir_path=root, new_folder_structure=True
+                )
+            else:
+                (
+                    path_to_fds_file,
+                    path_to_devc_file,
+                    path_to_hrr_file,
+                    error_list,
+                ) = _resolve_run_files(fds_dir)
+
             if error_list:
-                # See the charts-mode skip note in the previous commit.
                 with _charts_jobs_lock:
                     _charts_jobs[job_id]["errors"].extend(error_list)
                     _charts_jobs[job_id]["skipped"].append(name)

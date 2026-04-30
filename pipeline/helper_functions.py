@@ -72,21 +72,64 @@ def return_all_subfolders(path_to_dir):
     return [ item for item in os.listdir(path_to_dir) if os.path.isdir(os.path.join(path_to_dir, item)) ]
 
 
+def _has_run_csvs(directory):
+    """True if `directory` contains both a *_devc.csv and a *_hrr.csv file."""
+    try:
+        entries = listdir(directory)
+    except OSError:
+        return False
+    has_devc = any(f.endswith("devc.csv") for f in entries)
+    has_hrr = any(f.endswith("hrr.csv") for f in entries)
+    return has_devc and has_hrr
+
+
 def _find_folder_with_run_csvs(parent_dir, candidates):
     """Return the first candidate subfolder of `parent_dir` that contains
     both a *_devc.csv and a *_hrr.csv file, or None if no candidate qualifies.
     """
     for name in candidates:
-        sub = os.path.join(parent_dir, name)
-        try:
-            entries = listdir(sub)
-        except OSError:
-            continue
-        has_devc = any(f.endswith("devc.csv") for f in entries)
-        has_hrr = any(f.endswith("hrr.csv") for f in entries)
-        if has_devc and has_hrr:
+        if _has_run_csvs(os.path.join(parent_dir, name)):
             return name
     return None
+
+
+def discover_scenarios(root):
+    """Recursively find scenario folders under `root`.
+
+    A "scenario folder" is any directory containing both a *_devc.csv and
+    a *_hrr.csv file. The walker short-circuits on the first qualifying
+    folder along each path so we don't descend into the gigabytes of .sf /
+    .s3d boundary files an FDS run output produces.
+
+    Returns a list of dicts sorted by `id` (forward-slash relative path
+    from `root`):
+
+        {"id": "FS2_Rerun/scen_FDS", "label": "scen_FDS",
+         "fds_dir": "/abs/path/to/FS2_Rerun/scen_FDS"}
+
+    If `root` itself is a scenario, returns a single entry with id="".
+    """
+    root = os.path.abspath(root)
+    if _has_run_csvs(root):
+        return [{"id": "", "label": os.path.basename(root), "fds_dir": root}]
+
+    results = []
+    def walk(current_dir, rel_parts):
+        try:
+            entries = sorted(f.name for f in scandir(current_dir) if f.is_dir())
+        except OSError:
+            return
+        for name in entries:
+            sub = os.path.join(current_dir, name)
+            if _has_run_csvs(sub):
+                rel = "/".join(rel_parts + [name])
+                results.append({"id": rel, "label": name, "fds_dir": sub})
+                continue
+            walk(sub, rel_parts + [name])
+
+    walk(root, [])
+    results.sort(key=lambda s: s["id"])
+    return results
 
 
 def return_paths_to_files(scenario_name, dir_path='graph_generation', new_folder_structure=False):

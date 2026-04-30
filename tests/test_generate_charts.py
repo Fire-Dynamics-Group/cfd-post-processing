@@ -376,6 +376,89 @@ def test_generate_charts_uses_path_directly_when_it_contains_run_files(tmp_path,
     )
 
 
+def test_generate_charts_honors_explicit_scenarios_list(tmp_path, monkeypatch):
+    """When SCENARIOS is in the body, only the explicitly-selected
+    folders run — siblings are ignored. Chart helpers receive the
+    fds_dir-anchored CSV / FDS paths exactly as supplied."""
+    project = tmp_path / "Rev00 Models"
+    fs1 = project / "FS1_Plot80_FSA.fds_1776_FDS"
+    fs2_orig = project / "FS2_Plot84_FSA.fds_1776_FDS"
+    fs2_rerun = project / "FS2_Rerun" / "FS2_Plot84_FSA.fds_1777_FDS"
+    for run in (fs1, fs2_orig, fs2_rerun):
+        run.mkdir(parents=True)
+        (run / f"{run.name}.fds").write_text("")
+        (run / f"{run.name}_devc.csv").write_text("")
+        (run / f"{run.name}_hrr.csv").write_text("")
+
+    captured: list[tuple[str, str, bool, str]] = []
+
+    def fake_hrr(path_to_fds, path_to_hrr, new_dir_path, firefighting=False):
+        captured.append(("hrr", new_dir_path, firefighting, path_to_hrr))
+        with open(os.path.join(new_dir_path, "hrr_chart.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+
+    def fake_devc(path_to_devc, path_to_fds, new_dir_path, firefighting=False):
+        captured.append(("devc", new_dir_path, firefighting, path_to_devc))
+        with open(os.path.join(new_dir_path, "devc_chart.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+
+    monkeypatch.setattr(server, "run_hrr_charts", fake_hrr)
+    monkeypatch.setattr(server, "run_devc_charts", fake_devc)
+    monkeypatch.setattr(server, "CHARTS_BASE", str(tmp_path / "out"))
+
+    client = TestClient(server.create_app())
+    body = {
+        "PATH": str(project),
+        "PROJECT_NAME": "Test",
+        "SCENARIOS": [
+            {"id": fs1.name, "label": fs1.name, "fds_dir": str(fs1)},
+            {
+                "id": f"FS2_Rerun/{fs2_rerun.name}",
+                "label": fs2_rerun.name,
+                "fds_dir": str(fs2_rerun),
+            },
+        ],
+    }
+    resp = client.post("/generate-charts", json=body)
+    assert resp.status_code == 202, resp.text
+    job_id = resp.json()["job_id"]
+
+    final = _wait_terminal(client, job_id)
+    assert final["status"] == "completed"
+    assert final["scenarios_total"] == 2
+    names = sorted(s["name"] for s in final["scenarios"])
+    assert names == sorted([fs1.name, f"FS2_Rerun/{fs2_rerun.name}"])
+
+    # The original FS2 (not selected) must have been left alone.
+    seen_paths = {os.path.normpath(entry[3]) for entry in captured}
+    assert not any(os.path.normpath(str(fs2_orig)) in p for p in seen_paths), (
+        f"unselected FS2_Plot84_FSA.fds_1776_FDS should not have been processed: {seen_paths}"
+    )
+    # firefighting derived from label, so the rerun's "FSA" suffix correctly
+    # enables firefighting=True even though the wrapper folder is "FS2_Rerun".
+    rerun_flags = [c[2] for c in captured if fs2_rerun.name in c[1]]
+    assert rerun_flags and all(flag is True for flag in rerun_flags)
+
+
+def test_generate_charts_400_when_scenarios_fds_dir_missing(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+
+    monkeypatch.setattr(server, "CHARTS_BASE", str(tmp_path / "out"))
+    client = TestClient(server.create_app())
+    resp = client.post(
+        "/generate-charts",
+        json={
+            "PATH": str(project),
+            "PROJECT_NAME": "Test",
+            "SCENARIOS": [
+                {"id": "ghost", "label": "ghost", "fds_dir": str(tmp_path / "nope")},
+            ],
+        },
+    )
+    assert resp.status_code == 400
+
+
 def test_generate_charts_failed_status_when_worker_raises(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
