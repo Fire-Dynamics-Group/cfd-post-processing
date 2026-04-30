@@ -124,9 +124,52 @@ becomes a requirement.
 Internal-only for now: drop the `.exe` in the team Dropbox / shared
 drive and ping the channel.
 
-A GitHub Actions release pipeline is sketched as a stretch goal in the
-plan (`PR3_PLAN.md` step 11) but deferred unless the manual workflow
-becomes a bottleneck.
+### Auto-update via GitHub Releases
+
+`.github/workflows/release.yml` builds + signs + publishes the NSIS
+installer plus a `latest.json` feed whenever a `v*` tag is pushed. The
+desktop app calls `checkForUpdates()` on launch (silent if up-to-date)
+and `src/lib/updater.ts` exposes the same flow for an explicit "Check
+for updates" button.
+
+#### One-time signing key setup
+
+The updater requires a Tauri signing keypair. The **public** key gets
+committed to `tauri.conf.json`; the **private** key + passphrase live
+only as GitHub Actions secrets.
+
+```powershell
+# Generate the keypair (run once, locally — DO NOT commit the .key file).
+npx @tauri-apps/cli signer generate -w $HOME\.tauri\cfd-post-processing.key
+```
+
+The command prints the public key to stdout. Paste it into
+`src-tauri/tauri.conf.json` under `plugins.updater.pubkey`, replacing
+the `REPLACE_WITH_OUTPUT_OF_TAURI_SIGNER_GENERATE` placeholder.
+
+Then add two repository secrets at
+`https://github.com/Fire-Dynamics-Group/cfd-post-processing/settings/secrets/actions`:
+
+- `TAURI_SIGNING_PRIVATE_KEY` — full contents of
+  `~/.tauri/cfd-post-processing.key`.
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — the passphrase you chose.
+
+Back up the `.key` file somewhere safe (password manager, 1Password
+vault). If it's lost, every existing install must be reinstalled by
+hand — the new pubkey won't validate updates signed with the old one.
+
+#### Cutting a release
+
+```powershell
+# Bump version in all three places (package.json, Cargo.toml, tauri.conf.json),
+# commit, then:
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+The workflow takes ~10–15 minutes. The resulting GitHub Release
+contains the `.exe` installer and `latest.json`; existing installs
+will pick up the update on next launch.
 
 ## Versioning
 

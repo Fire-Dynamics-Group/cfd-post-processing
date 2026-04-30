@@ -1,7 +1,7 @@
 {
   "name": "cfd-post-processing",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0-rc.1",
   "type": "module",
   "scripts": {
     "dev:vite": "vite",
@@ -17,7 +17,9 @@
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-dialog": "^2.0.1",
     "@tauri-apps/plugin-opener": "^2.5.3",
+    "@tauri-apps/plugin-process": "^2.0.0",
     "@tauri-apps/plugin-shell": "^2.3.5",
+    "@tauri-apps/plugin-updater": "^2.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

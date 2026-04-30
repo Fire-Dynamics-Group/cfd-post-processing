@@ -1,11 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ChartsForm from "./components/ChartsForm";
 import ReportForm from "./components/ReportForm";
+import { checkForUpdates } from "./lib/updater";
 
 type Mode = "report" | "charts";
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("report");
+
+  useEffect(() => {
+    checkForUpdates({ silent: true });
+  }, []);
 
   return (
     <main className="app-shell">

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CFD Post-Processing",
-  "version": "0.2.0",
+  "version": "0.3.0-rc.1",
   "identifier": "com.firedynamicsgroup.cfd-post-processing",
   "build": {
     "beforeDevCommand": "npm run dev:vite",
@@ -40,5 +40,15 @@
     "shortDescription": "Post-process CFD outputs into report-ready artefacts",
     "longDescription": "Successor to the legacy CFDReportGen.exe — bundles a FastAPI sidecar that runs the existing report pipeline behind a React UI."
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Fire-Dynamics-Group/cfd-post-processing/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUwNkNFNjk1QkUzNEYxQzUKUldURjhUUytsZVpzNEVRbUk5S2pUa0NTQllPWVQxSGpNVkpZTTkxUG8zNzdmd3Y2ZnlIUEtacDQK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
 }
