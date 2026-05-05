@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "cfd-post-processing"
-version = "0.3.0-rc.4"
+version = "0.3.0-rc.5"
 dependencies = [
  "serde",
  "serde_json",
