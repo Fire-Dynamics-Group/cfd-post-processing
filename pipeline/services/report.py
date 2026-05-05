@@ -98,60 +98,6 @@ ProgressCallback = Callable[[Step, float], None]
 
 
 # ---------------------------------------------------------------------------
-# SCENARIOS filter (applied after parsing, before charting)
-# ---------------------------------------------------------------------------
-
-
-def filter_scenarios(
-    *,
-    selected_ids: list[str] | None,
-    scenario_names: list[str],
-    FSA_scenarios: list[str],
-    MoE_scenarios: list[str],
-    scenarios_object: dict[str, Any],
-) -> tuple[list[str], list[str], list[str], dict[str, Any]]:
-    """Restrict the parsed scenario set to only the IDs the user picked.
-
-    The Charts mode picker (``ChartsForm``) sends a ``SCENARIOS`` payload of
-    ``ScenarioSelection`` entries; Report mode mirrors that. The IDs from
-    that payload must match top-level ``scenario_names`` produced by
-    ``create_scenario_object`` — for top-level layouts, the discovery
-    ``id`` equals ``scenario_names[i]``.
-
-    ``selected_ids=None`` is the legacy behaviour: process every scenario
-    under PATH. Use that for backwards-compat and for the e2e test that
-    pre-dates the picker.
-
-    Output preserves the order of ``scenario_names`` (not the tick order
-    in ``selected_ids``) so scenario indexing stays stable across UI
-    interactions.
-    """
-    if selected_ids is None:
-        return scenario_names, FSA_scenarios, MoE_scenarios, scenarios_object
-
-    if not selected_ids:
-        raise PipelineError(
-            "SCENARIOS list is empty — pick at least one scenario to report on."
-        )
-
-    selected_set = set(selected_ids)
-    unknown = selected_set - set(scenario_names)
-    if unknown:
-        raise PipelineError(
-            "Selected scenario(s) not found under PATH: "
-            + ", ".join(sorted(unknown))
-        )
-
-    kept = [n for n in scenario_names if n in selected_set]
-    return (
-        kept,
-        [n for n in FSA_scenarios if n in selected_set],
-        [n for n in MoE_scenarios if n in selected_set],
-        {n: scenarios_object[n] for n in kept},
-    )
-
-
-# ---------------------------------------------------------------------------
 # Public orchestrator
 # ---------------------------------------------------------------------------
 
@@ -171,8 +117,23 @@ def run_orchestrator(req: ReportRequest, on_progress: ProgressCallback) -> Repor
     if not Path(req.PATH).exists():
         raise FileNotFoundError(f"Runs directory does not exist: {req.PATH}")
 
+    if req.SCENARIOS is not None and len(req.SCENARIOS) == 0:
+        # Frontend disables submit when zero are checked, so an empty
+        # list reaching here is a logic bug. Surface it as a user-fixable
+        # PipelineError rather than confusing "no scenarios" downstream.
+        raise PipelineError(
+            "SCENARIOS list is empty — pick at least one scenario to report on."
+        )
+
     scenarios_object, scenario_names, FSA_scenarios, MoE_scenarios, error_list = (
-        create_scenario_object(path_to_directory=req.PATH)
+        create_scenario_object(
+            path_to_directory=req.PATH,
+            # Discovery-derived ids (forward-slash relative paths) are
+            # passed through verbatim; ``return_paths_to_files`` resolves
+            # both top-level and nested layouts. ``None`` falls back to
+            # the legacy "every top-level subfolder" listing.
+            scenario_names=req.SCENARIOS,
+        )
     )
     if error_list:
         # Treat errors from the parser as fatal — they indicate missing fds /
@@ -183,16 +144,6 @@ def run_orchestrator(req: ReportRequest, on_progress: ProgressCallback) -> Repor
         )
     if not scenario_names:
         raise PipelineError(f"No scenarios found in {req.PATH}")
-
-    scenario_names, FSA_scenarios, MoE_scenarios, scenarios_object = (
-        filter_scenarios(
-            selected_ids=req.SCENARIOS,
-            scenario_names=scenario_names,
-            FSA_scenarios=FSA_scenarios,
-            MoE_scenarios=MoE_scenarios,
-            scenarios_object=scenarios_object,
-        )
-    )
 
     # Resolve fds_version from the first scenario (all scenarios in a job
     # share an FDS version per legacy assumption).

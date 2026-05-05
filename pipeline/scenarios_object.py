@@ -76,8 +76,18 @@ def _compute_per_prefix_worst_conditions(devc_df, path_to_devc_file, firefightin
 
 
 # TODO: move below to helper_functions.py
-def create_scenario_object(path_to_directory="graph_generation"):
-    scenario_names = return_scenario_names(path_to_directory)
+def create_scenario_object(path_to_directory="graph_generation", scenario_names=None):
+    """Parse FDS data for the given scenarios.
+
+    ``scenario_names=None`` falls back to the legacy "every top-level
+    subfolder" listing via :func:`return_scenario_names`. When provided,
+    the list is used verbatim — typically discovery-derived ids like
+    ``"FS2_Rerun/0406_..._FDS"`` for nested layouts. Forward-slash ids
+    are resolved by :func:`return_paths_to_files` against
+    ``path_to_directory``, so this works on Windows too.
+    """
+    if scenario_names is None:
+        scenario_names = return_scenario_names(path_to_directory)
 
     FSA_scenarios = [f for f in scenario_names if "FSA" in f]# filter names for fsa
     MoE_scenarios = [f for f in scenario_names if "FSA" not in f]
