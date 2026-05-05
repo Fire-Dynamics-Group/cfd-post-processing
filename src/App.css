@@ -1,6 +1,8 @@
 :root {
   font-family: "Segoe UI", system-ui, sans-serif;
-  color-scheme: light dark;
+  /* Light only — the design has no dark-mode variants. Without this,
+     OS-level dark mode renders inputs as white-on-white (invisible). */
+  color-scheme: light;
   background: #f6f7f9;
   color: #1f2328;
 }
@@ -40,6 +42,7 @@ form.report-form input[type="number"] {
   border: 1px solid #c5c9d0;
   border-radius: 4px;
   background: white;
+  color: #1f2328;
   box-sizing: border-box;
 }
 
