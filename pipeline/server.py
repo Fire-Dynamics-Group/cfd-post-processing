@@ -293,8 +293,8 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Unknown job id")
         return state.to_dict()
 
-    @app.post("/discover-charts-scenarios")
-    def discover_charts_scenarios(req: DiscoverScenariosRequest) -> dict[str, Any]:
+    @app.post("/discover-scenarios")
+    def discover_scenarios_endpoint(req: DiscoverScenariosRequest) -> dict[str, Any]:
         if not os.path.isdir(req.PATH):
             raise HTTPException(status_code=400, detail=f"PATH not found: {req.PATH}")
         _ensure_discover_import()

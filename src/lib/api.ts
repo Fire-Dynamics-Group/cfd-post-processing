@@ -22,6 +22,7 @@ export interface ReportPayload {
   MAX_TD: number | null;
   GUIDANCE: "BS9991" | "ADB";
   OUTPUT_DIR?: string | null;
+  SCENARIOS?: string[];
 }
 
 export interface JobError {
@@ -173,12 +174,12 @@ export interface ChartsJobState {
 }
 
 /** Discover scenario folders under ``PATH``. Used to populate the
- * folder-picker checklist in charts mode. */
-export async function discoverChartsScenarios(
+ * folder-picker checklist in charts mode and report mode. */
+export async function discoverScenarios(
   path: string,
 ): Promise<{ scenarios: ScenarioSelection[] }> {
   const response = await fetch(
-    `${await baseUrl()}/discover-charts-scenarios`,
+    `${await baseUrl()}/discover-scenarios`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

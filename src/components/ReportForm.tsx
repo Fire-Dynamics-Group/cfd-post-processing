@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   copyDiagnostic,
   createJob,
+  discoverScenarios,
   JobRequestError,
   openInWord,
   parseFieldErrors,
@@ -10,6 +11,7 @@ import {
   revealInFolder,
   type JobState,
   type ReportPayload,
+  type ScenarioSelection,
   type Step,
 } from "../lib/api";
 
@@ -35,9 +37,16 @@ const STEP_LABEL: Record<Step, string> = {
   done: "Done",
 };
 
+type PickerCtx = {
+  scenarios: ScenarioSelection[];
+  checked: Record<string, boolean>;
+};
+
 type Status =
   | { kind: "idle" }
-  | { kind: "submitting" }
+  | { kind: "discovering" }
+  | ({ kind: "picking" } & PickerCtx)
+  | ({ kind: "submitting" } & PickerCtx)
   | { kind: "running"; jobId: string; state: JobState | null }
   | { kind: "done"; state: JobState }
   | { kind: "job-error"; state: JobState }
@@ -76,17 +85,56 @@ export default function ReportForm() {
     }
   }
 
-  async function onSubmit(e: FormEvent) {
+  async function onDiscover(e: FormEvent) {
     e.preventDefault();
-    if (status.kind === "submitting" || status.kind === "running") return;
-    setStatus({ kind: "submitting" });
+    if (
+      status.kind === "discovering" ||
+      status.kind === "submitting" ||
+      status.kind === "running"
+    )
+      return;
+    setStatus({ kind: "discovering" });
     try {
-      const { job_id } = await createJob(values);
+      const { scenarios } = await discoverScenarios(values.PATH);
+      const checked: Record<string, boolean> = {};
+      for (const s of scenarios) checked[s.id] = true;
+      setStatus({ kind: "picking", scenarios, checked });
+    } catch (err) {
+      setStatus({
+        kind: "submit-error",
+        message: err instanceof Error ? err.message : String(err),
+        payload: err instanceof JobRequestError ? err.payload : null,
+      });
+    }
+  }
+
+  function toggleScenario(id: string) {
+    setStatus((s) =>
+      s.kind === "picking"
+        ? { ...s, checked: { ...s.checked, [id]: !s.checked[id] } }
+        : s,
+    );
+  }
+
+  function backToForm() {
+    setStatus({ kind: "idle" });
+  }
+
+  async function onCreateReport() {
+    if (status.kind !== "picking") return;
+    const selectedIds = status.scenarios
+      .filter((s) => status.checked[s.id])
+      .map((s) => s.id);
+    if (selectedIds.length === 0) return;
+    const payload: ReportPayload = { ...values, SCENARIOS: selectedIds };
+    const ctx: PickerCtx = {
+      scenarios: status.scenarios,
+      checked: status.checked,
+    };
+    setStatus({ kind: "submitting", ...ctx });
+    try {
+      const { job_id } = await createJob(payload);
       setStatus({ kind: "running", jobId: job_id, state: null });
-      // 1.5s cadence: a real report run takes minutes, so sub-second
-      // updates aren't perceptible to users; this also keeps poll volume
-      // reasonable (~40 requests/min vs ~120 at 500ms) without going as
-      // slow as cfd_dashboard.py's 10s.
       pollHandle.current = window.setInterval(async () => {
         try {
           const state = await pollJob(job_id);
@@ -96,7 +144,6 @@ export default function ReportForm() {
             stopPolling();
             setStatus({ kind: "done", state });
           } else {
-            // "failed" — JobError payload drives the banner type.
             stopPolling();
             setStatus({ kind: "job-error", state });
           }
@@ -133,9 +180,166 @@ export default function ReportForm() {
     }
   }
 
-  const busy = status.kind === "submitting" || status.kind === "running";
-  const runningState =
-    status.kind === "running" ? status.state : null;
+  // Picker lifecycle owns its own view: checklist + status sections.
+  // Errors that need form-field corrections (422) bounce back to the form
+  // view; a fresh discover step then rebuilds the picker.
+  const inPickerLifecycle =
+    status.kind === "picking" ||
+    status.kind === "submitting" ||
+    status.kind === "running" ||
+    status.kind === "done" ||
+    status.kind === "job-error";
+
+  if (inPickerLifecycle) {
+    const isPicking = status.kind === "picking";
+    const isSubmitting = status.kind === "submitting";
+    const showPickerControls = isPicking || isSubmitting;
+    const scenarios = showPickerControls ? status.scenarios : [];
+    const checked = showPickerControls ? status.checked : {};
+    const selectedCount = scenarios.filter((s) => checked[s.id]).length;
+    const isWorking = isSubmitting || status.kind === "running";
+    const runningState = status.kind === "running" ? status.state : null;
+
+    return (
+      <div className="report-picker">
+        <h2>Select scenarios to report</h2>
+        <p className="muted">{values.PATH}</p>
+        {showPickerControls && (
+          <>
+            {scenarios.length === 0 ? (
+              <div className="status-area">
+                No scenario folders found under this path. A scenario folder
+                is one that contains both <code>*_devc.csv</code> and{" "}
+                <code>*_hrr.csv</code>.
+              </div>
+            ) : (
+              <ul className="scenario-list">
+                {scenarios.map((s) => (
+                  <li key={s.id}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={!!checked[s.id]}
+                        disabled={!isPicking}
+                        onChange={() => toggleScenario(s.id)}
+                      />
+                      <span className="scenario-label">{s.label}</span>
+                      {s.id !== s.label && s.id !== "" && (
+                        <span className="muted scenario-path"> ({s.id})</span>
+                      )}
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+
+        {(showPickerControls || status.kind === "running") && (
+          <div className="actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={backToForm}
+              disabled={!isPicking}
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={onCreateReport}
+              disabled={isWorking || !isPicking || selectedCount === 0}
+            >
+              {isWorking ? "Working..." : `Create Report (${selectedCount})`}
+            </button>
+          </div>
+        )}
+
+        {runningState && (
+          <div className="status-area running">
+            <div>{STEP_LABEL[runningState.step]}…</div>
+            <progress value={runningState.progress_pct} max={1} />
+            <div className="muted">
+              {Math.round(runningState.progress_pct * 100)}%
+            </div>
+          </div>
+        )}
+        {status.kind === "running" && !status.state && (
+          <div className="status-area running">
+            <div>Starting…</div>
+          </div>
+        )}
+
+        {status.kind === "done" && status.state.output_path && (
+          <div className="status-area ok">
+            <div>Report saved to:</div>
+            <code>{status.state.output_path}</code>
+            <div className="post-actions">
+              <button
+                type="button"
+                onClick={() => openInWord(status.state.output_path!)}
+              >
+                Open in Word
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => revealInFolder(status.state.output_path!)}
+              >
+                Reveal in Folder
+              </button>
+            </div>
+            {status.state.warnings.length > 0 && (
+              <ul className="warnings">
+                {status.state.warnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {status.kind === "job-error" && status.state.error && (
+          <div className="status-area error">
+            <div>
+              <strong>
+                {status.state.error.type === "PipelineError"
+                  ? "Pipeline failed"
+                  : status.state.error.type === "ValidationError"
+                    ? "Validation failed"
+                    : "Internal error"}
+              </strong>
+              {status.state.error.step
+                ? ` at ${STEP_LABEL[status.state.error.step]?.toLowerCase() ?? status.state.error.step}`
+                : ""}
+            </div>
+            <div>{status.state.error.message}</div>
+            {status.state.error.type === "InternalError" && (
+              <div className="post-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => copyDiagnostic(status.state)}
+                >
+                  Copy diagnostic
+                </button>
+              </div>
+            )}
+            {status.state.error.traceback &&
+              status.state.error.type === "InternalError" && (
+                <details>
+                  <summary>Traceback</summary>
+                  <pre>{status.state.error.traceback}</pre>
+                </details>
+              )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Form view: idle, discovering, submit-error from /discover-scenarios or
+  // a failed /jobs POST, and field-errors (422 from /jobs).
   const fieldErrors =
     status.kind === "field-errors" ? status.fieldErrors : {};
 
@@ -144,7 +348,7 @@ export default function ReportForm() {
   }
 
   return (
-    <form className="report-form" onSubmit={onSubmit}>
+    <form className="report-form" onSubmit={onDiscover}>
       <label htmlFor="path">Path to runs' root directory:</label>
       <div className="path-row">
         <input
@@ -287,89 +491,10 @@ export default function ReportForm() {
       </div>
 
       <div className="actions">
-        <button type="submit" disabled={busy}>
-          {busy ? "Working..." : "Create Report"}
+        <button type="submit" disabled={status.kind === "discovering"}>
+          {status.kind === "discovering" ? "Discovering…" : "Discover scenarios"}
         </button>
       </div>
-
-      {runningState && (
-        <div className="status-area running">
-          <div>{STEP_LABEL[runningState.step]}…</div>
-          <progress value={runningState.progress_pct} max={1} />
-          <div className="muted">
-            {Math.round(runningState.progress_pct * 100)}%
-          </div>
-        </div>
-      )}
-      {status.kind === "running" && !status.state && (
-        <div className="status-area running">
-          <div>Starting…</div>
-        </div>
-      )}
-
-      {status.kind === "done" && status.state.output_path && (
-        <div className="status-area ok">
-          <div>Report saved to:</div>
-          <code>{status.state.output_path}</code>
-          <div className="post-actions">
-            <button
-              type="button"
-              onClick={() => openInWord(status.state.output_path!)}
-            >
-              Open in Word
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => revealInFolder(status.state.output_path!)}
-            >
-              Reveal in Folder
-            </button>
-          </div>
-          {status.state.warnings.length > 0 && (
-            <ul className="warnings">
-              {status.state.warnings.map((w, i) => (
-                <li key={i}>{w}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-
-      {status.kind === "job-error" && status.state.error && (
-        <div className="status-area error">
-          <div>
-            <strong>
-              {status.state.error.type === "PipelineError"
-                ? "Pipeline failed"
-                : status.state.error.type === "ValidationError"
-                  ? "Validation failed"
-                  : "Internal error"}
-            </strong>
-            {status.state.error.step
-              ? ` at ${STEP_LABEL[status.state.error.step]?.toLowerCase() ?? status.state.error.step}`
-              : ""}
-          </div>
-          <div>{status.state.error.message}</div>
-          {status.state.error.type === "InternalError" && (
-            <div className="post-actions">
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => copyDiagnostic(status.state)}
-              >
-                Copy diagnostic
-              </button>
-            </div>
-          )}
-          {status.state.error.traceback && status.state.error.type === "InternalError" && (
-            <details>
-              <summary>Traceback</summary>
-              <pre>{status.state.error.traceback}</pre>
-            </details>
-          )}
-        </div>
-      )}
 
       {status.kind === "submit-error" && (
         <div className="status-area error">

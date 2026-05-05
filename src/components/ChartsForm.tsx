@@ -2,7 +2,7 @@ import { useRef, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   JobRequestError,
-  discoverChartsScenarios,
+  discoverScenarios,
   pollChartsJob,
   startChartsJob,
   type ChartManifest,
@@ -66,7 +66,7 @@ export default function ChartsForm() {
     if (status.kind === "discovering" || status.kind === "submitting") return;
     setStatus({ kind: "discovering" });
     try {
-      const { scenarios } = await discoverChartsScenarios(values.PATH);
+      const { scenarios } = await discoverScenarios(values.PATH);
       const checked: Record<string, boolean> = {};
       for (const s of scenarios) checked[s.id] = true;
       setStatus({ kind: "picking", scenarios, checked });

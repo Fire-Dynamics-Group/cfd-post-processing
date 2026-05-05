@@ -73,7 +73,7 @@ describe("ChartsForm progressive UI", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     vi.mocked(fetch)
-      // POST /discover-charts-scenarios -> 2 scenarios
+      // POST /discover-scenarios -> 2 scenarios
       .mockResolvedValueOnce(
         discoverResponse([
           { id: "FS1_FSA" },
@@ -210,7 +210,7 @@ describe("ChartsForm progressive UI", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     vi.mocked(fetch)
-      // POST /discover-charts-scenarios -> 3 scenarios
+      // POST /discover-scenarios -> 3 scenarios
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -325,5 +325,28 @@ describe("ChartsForm progressive UI", () => {
     await waitFor(() => {
       expect(screen.getByText("RuntimeError: kaboom")).toBeInTheDocument();
     });
+  });
+
+  it("disables Create Charts when every scenario is unchecked", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      discoverResponse([{ id: "FS1_FSA" }, { id: "FS2_MOE" }]),
+    );
+
+    const user = userEvent.setup();
+    render(<ChartsForm />);
+
+    await user.type(screen.getByLabelText(/path to runs/i), "C:/runs");
+    await user.type(screen.getByLabelText(/project name/i), "Test");
+    await user.click(screen.getByRole("button", { name: /discover scenarios/i }));
+
+    const checkboxes = await screen.findAllByRole("checkbox");
+    expect(checkboxes).toHaveLength(2);
+    for (const cb of checkboxes) {
+      await user.click(cb);
+    }
+
+    const createButton = screen.getByRole("button", { name: /^create charts/i });
+    expect(createButton).toBeDisabled();
+    expect(createButton).toHaveTextContent("(0)");
   });
 });

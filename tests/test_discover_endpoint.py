@@ -1,9 +1,10 @@
-"""Tests for POST /discover-charts-scenarios.
+"""Tests for POST /discover-scenarios.
 
-The endpoint powers the charts-mode folder picker: the frontend POSTs the
-user-selected root and renders the returned scenario list as a checklist.
-The work is delegated to ``helper_functions.discover_scenarios``; the
-endpoint just validates the path and shapes the response.
+The endpoint powers the folder picker shared by Charts mode and Report
+mode: the frontend POSTs the user-selected root and renders the returned
+scenario list as a checklist. The work is delegated to
+``helper_functions.discover_scenarios``; the endpoint just validates the
+path and shapes the response.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ def test_returns_discovered_scenarios(tmp_path: Path) -> None:
 
     client = TestClient(server.create_app())
     resp = client.post(
-        "/discover-charts-scenarios", json={"PATH": str(tmp_path)}
+        "/discover-scenarios", json={"PATH": str(tmp_path)}
     )
 
     assert resp.status_code == 200, resp.text
@@ -46,7 +47,7 @@ def test_returns_empty_list_when_root_has_no_scenarios(tmp_path: Path) -> None:
 
     client = TestClient(server.create_app())
     resp = client.post(
-        "/discover-charts-scenarios", json={"PATH": str(tmp_path)}
+        "/discover-scenarios", json={"PATH": str(tmp_path)}
     )
 
     assert resp.status_code == 200
@@ -56,7 +57,7 @@ def test_returns_empty_list_when_root_has_no_scenarios(tmp_path: Path) -> None:
 def test_400_when_path_does_not_exist(tmp_path: Path) -> None:
     client = TestClient(server.create_app())
     resp = client.post(
-        "/discover-charts-scenarios",
+        "/discover-scenarios",
         json={"PATH": str(tmp_path / "nope")},
     )
     assert resp.status_code == 400

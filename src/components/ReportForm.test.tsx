@@ -43,6 +43,41 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 
+/** A discovery response. Defaults to a single scenario so existing tests
+ * that only care about the post-pick flow can stay terse. Tests that need
+ * to exercise the checklist itself pass an explicit list. */
+function discoverResponse(
+  scenarios: Array<{ id: string; label?: string }> = [
+    { id: "FS1_FSA", label: "FS1_FSA" },
+  ],
+) {
+  return jsonResponse({
+    scenarios: scenarios.map((s) => ({
+      id: s.id,
+      label: s.label ?? s.id,
+      fds_dir: `C:/runs/${s.id}`,
+    })),
+  });
+}
+
+
+/** Click the Discover button and wait for the picker view to appear.
+ * Caller is responsible for mocking the discover response and filling
+ * any fields it needs first. */
+async function clickDiscoverAndWaitForPicker(
+  user: ReturnType<typeof userEvent.setup>,
+) {
+  await user.click(
+    screen.getByRole("button", { name: /Discover scenarios/i }),
+  );
+  await waitFor(() => {
+    expect(
+      screen.getByRole("button", { name: /^Create Report/i }),
+    ).toBeInTheDocument();
+  });
+}
+
+
 function runningState(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: "abc",
@@ -77,20 +112,26 @@ describe("ReportForm", () => {
     expect(screen.getByLabelText(/Senior's email prefix/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Max Travel Distance/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Output folder/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Create Report/i })).toBeEnabled();
+    // Initial action is "Discover scenarios" — the Create Report button
+    // only appears in the picker view after discovery succeeds.
+    expect(
+      screen.getByRole("button", { name: /Discover scenarios/i }),
+    ).toBeEnabled();
   });
 
-  it("posts the form to /jobs and shows running progress", async () => {
+  it("posts the form to /jobs with selected SCENARIOS and shows running progress", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const fetchMock = vi.mocked(fetch);
     fetchMock
+      .mockResolvedValueOnce(discoverResponse([{ id: "FS1_FSA" }]))
       .mockResolvedValueOnce(jsonResponse({ job_id: "abc" }, 202))
       .mockResolvedValue(jsonResponse(runningState()));
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<ReportForm />);
     await fillRequiredFields(user);
-    await user.click(screen.getByRole("button", { name: /Create Report/i }));
+    await clickDiscoverAndWaitForPicker(user);
+    await user.click(screen.getByRole("button", { name: /^Create Report/i }));
 
     // First poll fires after 1500ms.
     await vi.advanceTimersByTimeAsync(1500);
@@ -102,20 +143,20 @@ describe("ReportForm", () => {
     // Submit button is disabled while busy.
     expect(screen.getByRole("button", { name: /Working/i })).toBeDisabled();
 
-    // Verify POST was the first fetch and it carried a JSON body with the
-    // expected shape.
+    // Verify the /jobs POST (second fetch — first was /discover-scenarios)
+    // carried the expected JSON body, including SCENARIOS from the picker.
     expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
+      2,
       "http://127.0.0.1:8765/jobs",
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
       }),
     );
-    const firstCallBody = JSON.parse(
-      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    const postBody = JSON.parse(
+      (fetchMock.mock.calls[1][1] as RequestInit).body as string,
     );
-    expect(firstCallBody).toMatchObject({
+    expect(postBody).toMatchObject({
       PATH: "C:/runs",
       CLIENT_NAME: "Acme",
       PROJECT_NAME: "Proj",
@@ -123,6 +164,7 @@ describe("ReportForm", () => {
       EMAIL_PREFIX: "ian",
       GUIDANCE: "BS9991",
       HAS_EXTENDED_TRAVEL: true,
+      SCENARIOS: ["FS1_FSA"],
     });
   });
 
@@ -130,6 +172,7 @@ describe("ReportForm", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const fetchMock = vi.mocked(fetch);
     fetchMock
+      .mockResolvedValueOnce(discoverResponse())
       .mockResolvedValueOnce(jsonResponse({ job_id: "abc" }, 202))
       .mockResolvedValueOnce(
         jsonResponse(
@@ -145,7 +188,8 @@ describe("ReportForm", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<ReportForm />);
     await fillRequiredFields(user);
-    await user.click(screen.getByRole("button", { name: /Create Report/i }));
+    await clickDiscoverAndWaitForPicker(user);
+    await user.click(screen.getByRole("button", { name: /^Create Report/i }));
 
     await vi.advanceTimersByTimeAsync(1500);
 
@@ -167,31 +211,35 @@ describe("ReportForm", () => {
   });
 
   it("renders inline field-level errors when the server returns 422", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse(
-        {
-          detail: [
-            {
-              loc: ["body", "PROJECT_NAME"],
-              msg: "field required",
-              type: "missing",
-            },
-            {
-              loc: ["body", "PATH"],
-              msg: "field required",
-              type: "missing",
-            },
-          ],
-        },
-        422,
-      ),
-    );
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(discoverResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            detail: [
+              {
+                loc: ["body", "PROJECT_NAME"],
+                msg: "field required",
+                type: "missing",
+              },
+              {
+                loc: ["body", "CLIENT_NAME"],
+                msg: "field required",
+                type: "missing",
+              },
+            ],
+          },
+          422,
+        ),
+      );
 
     const user = userEvent.setup();
     render(<ReportForm />);
-    // Click Create Report without filling anything — server-side 422 is
-    // simulated above so we don't need browser-side validation.
-    await user.click(screen.getByRole("button", { name: /Create Report/i }));
+    // PATH must be filled to discover, but other required fields are left
+    // empty — the server-side 422 (mocked above) drives the field-error UI.
+    await user.type(screen.getByLabelText(/Path to runs/i), "C:/runs");
+    await clickDiscoverAndWaitForPicker(user);
+    await user.click(screen.getByRole("button", { name: /^Create Report/i }));
 
     await waitFor(() => {
       const matches = screen.getAllByText(/field required/i);
@@ -203,14 +251,17 @@ describe("ReportForm", () => {
   });
 
   it("shows a 409 'already running' banner when the server rejects a duplicate POST", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse({ detail: "A report job is already running" }, 409),
-    );
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(discoverResponse())
+      .mockResolvedValueOnce(
+        jsonResponse({ detail: "A report job is already running" }, 409),
+      );
 
     const user = userEvent.setup();
     render(<ReportForm />);
     await fillRequiredFields(user);
-    await user.click(screen.getByRole("button", { name: /Create Report/i }));
+    await clickDiscoverAndWaitForPicker(user);
+    await user.click(screen.getByRole("button", { name: /^Create Report/i }));
 
     await waitFor(() =>
       expect(screen.getByText("HTTP 409")).toBeInTheDocument(),
@@ -223,6 +274,7 @@ describe("ReportForm", () => {
   it("renders a Pipeline failed banner WITHOUT a Copy diagnostic button", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.mocked(fetch)
+      .mockResolvedValueOnce(discoverResponse())
       .mockResolvedValueOnce(jsonResponse({ job_id: "abc" }, 202))
       .mockResolvedValueOnce(
         jsonResponse(
@@ -243,7 +295,8 @@ describe("ReportForm", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<ReportForm />);
     await fillRequiredFields(user);
-    await user.click(screen.getByRole("button", { name: /Create Report/i }));
+    await clickDiscoverAndWaitForPicker(user);
+    await user.click(screen.getByRole("button", { name: /^Create Report/i }));
     await vi.advanceTimersByTimeAsync(1500);
 
     await waitFor(() =>
@@ -260,6 +313,7 @@ describe("ReportForm", () => {
     // here we only verify the UI rendering of the InternalError variant.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.mocked(fetch)
+      .mockResolvedValueOnce(discoverResponse())
       .mockResolvedValueOnce(jsonResponse({ job_id: "abc" }, 202))
       .mockResolvedValueOnce(
         jsonResponse(
@@ -280,7 +334,8 @@ describe("ReportForm", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<ReportForm />);
     await fillRequiredFields(user);
-    await user.click(screen.getByRole("button", { name: /Create Report/i }));
+    await clickDiscoverAndWaitForPicker(user);
+    await user.click(screen.getByRole("button", { name: /^Create Report/i }));
     await vi.advanceTimersByTimeAsync(1500);
 
     await waitFor(() =>
@@ -300,6 +355,7 @@ describe("ReportForm", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const fetchMock = vi.mocked(fetch);
     fetchMock
+      .mockResolvedValueOnce(discoverResponse())
       .mockResolvedValueOnce(jsonResponse({ job_id: "abc" }, 202))
       .mockResolvedValueOnce(
         jsonResponse(
@@ -315,7 +371,8 @@ describe("ReportForm", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<ReportForm />);
     await fillRequiredFields(user);
-    await user.click(screen.getByRole("button", { name: /Create Report/i }));
+    await clickDiscoverAndWaitForPicker(user);
+    await user.click(screen.getByRole("button", { name: /^Create Report/i }));
 
     // First poll: terminal. After this, the interval should be cleared.
     await vi.advanceTimersByTimeAsync(1500);
@@ -327,5 +384,93 @@ describe("ReportForm", () => {
     // Advance way past several poll cycles. No new GETs should fire.
     await vi.advanceTimersByTimeAsync(15000);
     expect(fetchMock.mock.calls.length).toBe(callsAfterFirstPoll);
+  });
+
+  it("shows discovered scenarios as default-checked checkboxes after Discover", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      discoverResponse([{ id: "FS1_FSA" }, { id: "FS2_MOE" }, { id: "FS3_FSA" }]),
+    );
+
+    const user = userEvent.setup();
+    render(<ReportForm />);
+    await fillRequiredFields(user);
+    await clickDiscoverAndWaitForPicker(user);
+
+    const checkboxes = await screen.findAllByRole("checkbox");
+    expect(checkboxes).toHaveLength(3);
+    checkboxes.forEach((cb) => expect(cb).toBeChecked());
+  });
+
+  it("posts only the checked scenarios when the user unchecks one", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(
+        discoverResponse([
+          { id: "FS1_FSA" },
+          { id: "FS2_MOE" },
+          { id: "FS3_FSA" },
+        ]),
+      )
+      .mockResolvedValueOnce(jsonResponse({ job_id: "abc" }, 202))
+      .mockResolvedValue(jsonResponse(runningState()));
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<ReportForm />);
+    await fillRequiredFields(user);
+    await clickDiscoverAndWaitForPicker(user);
+
+    const checkboxes = await screen.findAllByRole("checkbox");
+    // Uncheck the middle scenario.
+    await user.click(checkboxes[1]);
+    expect(checkboxes[1]).not.toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: /^Create Report/i }));
+
+    const postBody = JSON.parse(
+      (fetchMock.mock.calls[1][1] as RequestInit).body as string,
+    );
+    expect(postBody.SCENARIOS).toEqual(["FS1_FSA", "FS3_FSA"]);
+  });
+
+  it("disables Create Report when every scenario is unchecked", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      discoverResponse([{ id: "FS1_FSA" }, { id: "FS2_MOE" }]),
+    );
+
+    const user = userEvent.setup();
+    render(<ReportForm />);
+    await fillRequiredFields(user);
+    await clickDiscoverAndWaitForPicker(user);
+
+    const checkboxes = await screen.findAllByRole("checkbox");
+    for (const cb of checkboxes) {
+      await user.click(cb);
+    }
+
+    const createButton = screen.getByRole("button", { name: /^Create Report/i });
+    expect(createButton).toBeDisabled();
+    expect(createButton).toHaveTextContent("(0)");
+  });
+
+  it("shows an empty-state when discovery returns no scenarios", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(discoverResponse([]));
+
+    const user = userEvent.setup();
+    render(<ReportForm />);
+    await fillRequiredFields(user);
+    await user.click(
+      screen.getByRole("button", { name: /Discover scenarios/i }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/No scenario folders found/i),
+      ).toBeInTheDocument(),
+    );
+    // Create Report doesn't appear (or is disabled) when no scenarios were
+    // discovered — the user has nothing to submit.
+    const createButton = screen.queryByRole("button", { name: /^Create Report/i });
+    if (createButton) expect(createButton).toBeDisabled();
   });
 });
