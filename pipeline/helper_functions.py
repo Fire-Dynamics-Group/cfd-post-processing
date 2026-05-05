@@ -25,10 +25,16 @@ def fds_stem_from_scenario_folder(scenario_name):
     Legacy / simple convention:
       'FS1'      ->  'FS1'
       'FS1.fds'  ->  'FS1'
+    Picker-derived nested ids (``return_paths_to_files`` accepts these):
+      'FS2_Rerun/0406_..._FDS'  ->  '0406_...'
     """
-    if '.fds' in scenario_name:
-        return scenario_name.split('.fds')[0]
-    return scenario_name
+    # Strip any wrapper-folder prefix the picker may emit. Charts are
+    # saved by FDS basename only, so the stem has to drop the prefix or
+    # ``group_charts_by_scenario`` won't find the chart files.
+    leaf = scenario_name.rsplit('/', 1)[-1]
+    if '.fds' in leaf:
+        return leaf.split('.fds')[0]
+    return leaf
 
 
 def group_charts_by_scenario(chart_names, scenario_names):

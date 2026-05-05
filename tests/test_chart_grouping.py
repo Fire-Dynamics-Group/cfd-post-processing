@@ -26,6 +26,14 @@ def test_stem_with_just_fds_extension():
     assert fds_stem_from_scenario_folder('FS1.fds') == 'FS1'
 
 
+def test_stem_strips_nested_path_prefix_from_picker_id():
+    """The folder picker emits forward-slash relative ids for nested
+    layouts. Charts are saved by FDS basename only (no path prefix), so
+    the stem must drop the prefix or grouping won't match."""
+    nested = 'FS2_Rerun/0406_Finchley_FS2_Plot84_FSA.fds_1777479976394_FDS'
+    assert fds_stem_from_scenario_folder(nested) == '0406_Finchley_FS2_Plot84_FSA'
+
+
 # ---- group_charts_by_scenario ----
 
 def test_finchley_two_scenarios_grouped_correctly():
@@ -78,3 +86,21 @@ def test_chart_order_within_group_preserved():
     chart_names = ['FS1_b.png', 'FS1_a.png', 'FS1_c.png']
     groups = group_charts_by_scenario(chart_names, ['FS1'])
     assert groups[0] == ['FS1_b.png', 'FS1_a.png', 'FS1_c.png']
+
+
+def test_nested_picker_id_groups_against_basename_charts():
+    """When a picker id is nested (``FS2_Rerun/0406_..._FDS``), the chart
+    PNGs are still saved under the FDS basename only — the path prefix
+    must not block the match."""
+    chart_names = [
+        '0406_Finchley_FS1_Plot80_FSA_hrr_chart.png',
+        '0406_Finchley_FS2_Plot84_FSA_hrr_chart.png',
+        '0406_Finchley_FS2_Plot84_FSA_devc_stair_temp__chart.png',
+    ]
+    scenario_names = [
+        '0406_Finchley_FS1_Plot80_FSA.fds_1776875134353_FDS',
+        'FS2_Rerun/0406_Finchley_FS2_Plot84_FSA.fds_1777479976394_FDS',
+    ]
+    groups = group_charts_by_scenario(chart_names, scenario_names)
+    assert len(groups[0]) == 1 and 'FS1' in groups[0][0]
+    assert len(groups[1]) == 2 and all('FS2' in c for c in groups[1])
