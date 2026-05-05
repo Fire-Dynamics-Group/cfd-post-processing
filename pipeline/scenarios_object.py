@@ -3,7 +3,7 @@ import json
 
 from helper_functions import return_paths_to_files, read_from_csv_skip_first_row, get_worst_case_devc, compute_last_time_step_not_tenable, max_or_min_is_worse, find_worst_in_column, get_column_prefix, get_cc_columns
 from scen_object_helper_functions import is_sprinklered, find_venting_from_fds, return_scenario_names
-from fds_output_utils import find_door_opening_times
+from fds_output_utils import find_door_opening_times_with_close_defaults
 
 
 def _compute_per_prefix_worst_conditions(devc_df, path_to_devc_file, firefighting):
@@ -145,7 +145,7 @@ def create_scenario_object(path_to_directory="graph_generation"):
         scenarios_object[scen_key]["venting"]["stair_aov"]["area"] = aov_area
         scenarios_object[scen_key]["venting"]["natural_openings"] = natural_inlet_list
         scenarios_object[scen_key]["is_sprinklered"] = has_sprinklers
-        scenarios_object[scen_key]["door_opening_times"] = find_door_opening_times(path_to_file=path_to_fds_file)
+        scenarios_object[scen_key]["door_opening_times"] = find_door_opening_times_with_close_defaults(path_to_file=path_to_fds_file)
         scenarios_object[scen_key]["end_time"] = max_T
     #     return({"opening_apartment": opening_apartment[0], "closing_apartment":closing_apartment[-1], "opening_stair":opening_stair[0], "closing_stair":closing_stair[-1]})
         moe_list = ["vis", "temp"]
@@ -173,13 +173,8 @@ def create_scenario_object(path_to_directory="graph_generation"):
                     if current in prefix:
                         tenability_time = compute_last_time_step_not_tenable(df=new_df_devc, property=current, worst_case_column_name="worst_case", firefighting=firefighting)
                         tenability_time_list.append(tenability_time)
-            # # TODO: remove below hack - required until naming convention to followed in FDS file
-            # if scenarios_object[scen_key]["door_opening_times"]["closing_apartment"] == None:
-            #     closing_apartment = 80
-            # else:
             closing_apartment = scenarios_object[scen_key]["door_opening_times"]["closing_apartment"]
-            
-            tenability_time = max(tenability_time_list)- closing_apartment # should take-away door closing
+            tenability_time = max(tenability_time_list) - closing_apartment  # should take-away door closing
             scenarios_object[scen_key]["tenability"] = {"time": tenability_time}
             # min pressure - needed for FSA!!
             current = "pres"

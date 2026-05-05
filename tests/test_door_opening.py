@@ -24,7 +24,10 @@ fixtures with tmp_path / "x.fds" and write the FDS text inline.
 """
 import pytest
 
-from fds_output_utils import find_door_opening_times
+from fds_output_utils import (
+    find_door_opening_times,
+    find_door_opening_times_with_close_defaults,
+)
 
 
 # A note on the tmp dir: find_door_opening_times calls find_all_files_of_type
@@ -168,6 +171,57 @@ def test_empty_file_returns_defaults(tmp_path):
         "opening_stair": 0,
         "closing_stair": None,
     }
+
+
+# --- G2. Legacy-defaults wrapper substitutes 80s for missing close events --
+
+def test_with_close_defaults_substitutes_80_for_missing_apartment_close(tmp_path):
+    """The orchestrator's tenability arithmetic and the HRR chart's
+    "+120s after door close" markers can't handle None. The wrapper
+    fills missing close events with the legacy 80s default so downstream
+    code keeps working."""
+    body = (
+        "&DEVC ID='TIMER->OUT', QUANTITY='TIME', XYZ=12.2,1.5,0.0, SETPOINT=60.0/\n"
+        "&CTRL ID='invert', FUNCTION_TYPE='ALL', LATCH=.FALSE., "
+        "INITIAL_STATE=.TRUE., INPUT_ID='TIMER->OUT'/\n"
+        "&OBST ID='Apt Walls', XB=8.6,9.5,9.7,9.9,0.0,2.0, "
+        "SURF_ID='Plasterboard', CTRL_ID='invert'/\n"
+    )
+    path = _write_fds(tmp_path, body)
+
+    # Source function still reports None — preserves the "no close event"
+    # signal for callers that care.
+    raw = find_door_opening_times(path)
+    assert raw["closing_apartment"] is None
+
+    # Wrapper replaces None with the legacy default.
+    result = find_door_opening_times_with_close_defaults(path)
+    assert result["closing_apartment"] == 80
+    assert result["closing_stair"] == 80
+    # Non-None values pass through unchanged.
+    assert result["opening_apartment"] == 60.0
+
+
+def test_with_close_defaults_passes_through_real_close_events(tmp_path):
+    """When the FDS file does declare a close event, the wrapper does not
+    overwrite it with 80. Whatever the parser produces (its semantics
+    aren't relevant here) must round-trip unchanged."""
+    body = (
+        "&DEVC ID='APT_OPEN', QUANTITY='TIME', SETPOINT=60.0/\n"
+        "&DEVC ID='APT_CLOSE', QUANTITY='TIME', SETPOINT=120.0/\n"
+        "&CTRL ID='Apt_Door_Ctrl', FUNCTION_TYPE='ANY', "
+        "INPUT_ID='APT_OPEN','APT_CLOSE'/\n"
+        "&OBST ID='Apt Walls', XB=0,1,0,1,0,2, CTRL_ID='Apt_Door_Ctrl'/\n"
+    )
+    path = _write_fds(tmp_path, body)
+    raw = find_door_opening_times(path)
+    # Sanity-check the fixture: the parser must not return None — this
+    # test only proves "non-None value preserved", not the specific value.
+    assert raw["closing_apartment"] is not None
+    assert raw["closing_apartment"] != 80
+
+    result = find_door_opening_times_with_close_defaults(path)
+    assert result["closing_apartment"] == raw["closing_apartment"]
 
 
 # --- H. Both apt and stair in one file -------------------------------------

@@ -104,7 +104,9 @@ def fsa_safe_defaults(monkeypatch):
     def fake_is_sprinklered(path_to_file):
         return False
 
-    monkeypatch.setattr(so, "find_door_opening_times", fake_door_opening_times)
+    monkeypatch.setattr(
+        so, "find_door_opening_times_with_close_defaults", fake_door_opening_times
+    )
     monkeypatch.setattr(so, "find_venting_from_fds", fake_find_venting)
     monkeypatch.setattr(so, "is_sprinklered", fake_is_sprinklered)
     return monkeypatch

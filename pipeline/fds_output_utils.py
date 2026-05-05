@@ -210,6 +210,24 @@ def find_door_opening_times(path_to_file):
     }
 
 
+def find_door_opening_times_with_close_defaults(path_to_file):
+    """Same as ``find_door_opening_times``, but replaces ``None`` close
+    events with the legacy 80s default.
+
+    Use this when downstream code can't handle ``None`` (tenability
+    arithmetic in ``scenarios_object``, the "+120s after Door Closes"
+    chart marker in ``hrr_graph``). The base function preserves the
+    ``None`` signal for callers that need to know the FDS file lacks a
+    close event.
+    """
+    door_times = find_door_opening_times(path_to_file)
+    if door_times.get("closing_apartment") is None:
+        door_times["closing_apartment"] = 80
+    if door_times.get("closing_stair") is None:
+        door_times["closing_stair"] = 80
+    return door_times
+
+
 # ---- Helpers --------------------------------------------------------------
 
 def _strip_quotes(s):

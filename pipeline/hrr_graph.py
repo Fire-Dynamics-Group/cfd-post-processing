@@ -23,7 +23,7 @@ class ChartPlotError(Exception):
         self.csv_path = csv_path
 
 from helper_functions import return_paths_to_files, find_worst_case_column_name, filter_dataframe_by_column_starting_with_string, read_from_csv_skip_first_row, get_column_prefix
-from fds_output_utils import find_door_opening_times
+from fds_output_utils import find_door_opening_times_with_close_defaults
 
 brand_blues = {
     "light_blue": '#B5D8FE',
@@ -390,7 +390,7 @@ def find_column_with_most_frequent_min(df):
 
 def run_devc_charts(path_to_file, path_to_fds_file, new_dir_path,firefighting=False):
     devc_df = read_from_csv_skip_first_row(path_to_file)
-    door_openings = find_door_opening_times(path_to_file=path_to_fds_file)
+    door_openings = find_door_opening_times_with_close_defaults(path_to_file=path_to_fds_file)
 
     # Strip trailing device number to get column prefix
     dataframe_columns = devc_df.columns
@@ -590,7 +590,7 @@ def run_hrr_charts(path_to_fds_file, path_to_hrr_file, new_dir_path,firefighting
     #     door_openings = {'opening_apartment': 180.0, 'closing_apartment': None, 'opening_stair': None, 'closing_stair': None} 
     # else: 
     #     door_openings = find_door_opening_times(path_to_file=path_to_fds_file)
-    door_openings = find_door_opening_times(path_to_file=path_to_fds_file)
+    door_openings = find_door_opening_times_with_close_defaults(path_to_file=path_to_fds_file)
     chart_file = file_name_from_path(file_path=path_to_hrr_file)
     chart_hrr(hrr_df, new_dir_path=new_dir_path,max_model_hrr=model_hrr,firefighting=firefighting,filename=chart_file,door_openings=door_openings)
 
